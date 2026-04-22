@@ -21,7 +21,7 @@ describe('TaskRunner with HookDispatcher Integration', () => {
     const logsDir = join(tempDir, 'logs');
     const logPath = join(logsDir, 'runs.jsonl');
     const executionsDir = join(tempDir, 'executions');
-    const configPath = join(process.cwd(), 'tests/fixtures/llm-config.test.json');
+    const configPath = join(process.cwd(), 'tests/fixtures/galloper.test.json');
 
     configManager = new ConfigManager({ configPath });
     await configManager.load();

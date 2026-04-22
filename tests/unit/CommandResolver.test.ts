@@ -9,7 +9,7 @@ describe('CommandResolver', () => {
   let resolver: CommandResolver;
 
   beforeEach(async () => {
-    configPath = join(process.cwd(), 'tests/fixtures/llm-config.test.json');
+    configPath = join(process.cwd(), 'tests/fixtures/galloper.test.json');
     configManager = new ConfigManager({ configPath });
     await configManager.load();
     resolver = new CommandResolver({ configManager });

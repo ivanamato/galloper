@@ -28,7 +28,7 @@ describe('Orchestrator - Environment Propagation', () => {
     sessionsDir = join(dataDir, 'sessions');
     plansDir = join(dataDir, 'plans');
     executionsDir = join(dataDir, 'executions');
-    configPath = join(tempDir, 'llm-config.env.test.json');
+    configPath = join(tempDir, 'galloper.env.test.json');
 
     // Create a default config file for beforeEach
     const defaultConfig = {

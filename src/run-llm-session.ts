@@ -19,7 +19,7 @@ const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
 const PLANS_DIR = path.join(DATA_DIR, 'plans');
 const EXECUTIONS_DIR = path.join(DATA_DIR, 'executions');
-const CONFIG_PATH = path.join(CWD, 'llm-config.json');
+const CONFIG_PATH = path.join(CWD, 'galloper.json');
 const CENTRAL_LOG_PATH = path.join(LOGS_DIR, 'runs.jsonl');
 
 interface CliArgs {

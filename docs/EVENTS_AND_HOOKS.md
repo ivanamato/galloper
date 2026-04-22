@@ -1,6 +1,6 @@
 # Events and Hooks Reference
 
-This document describes all events and lifecycle hooks emitted by galloper. Configure handlers for these in `llm-config.json` under `hooks.events` and `hooks.lifecycle`.
+This document describes all events and lifecycle hooks emitted by galloper. Configure handlers for these in `galloper.json` under `hooks.events` and `hooks.lifecycle`.
 
 ## Events
 

@@ -25,7 +25,7 @@ describe('Orchestrator - Errors and Edge Cases', () => {
     logsDir = join(dataDir, 'logs');
     logPath = join(logsDir, 'runs.jsonl');
     sessionsDir = join(dataDir, 'sessions');
-    configPath = join(process.cwd(), 'tests/fixtures/llm-config.test.json');
+    configPath = join(process.cwd(), 'tests/fixtures/galloper.test.json');
 
     const configManager = new ConfigManager({ configPath });
     await configManager.load();

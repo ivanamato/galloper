@@ -2,14 +2,75 @@
 
 A minimal Node.js runner for executing Claude Code (Codex) commands programmatically. Use it to orchestrate multiple Claude Code runs, batch process prompts, integrate with external systems, or test Claude Code automation.
 
+> ## Status: Alpha — Research & Study Use Only
+>
+> galloper is in **early alpha** and under active development. Expect breaking changes, rough edges, and unresolved bugs between releases; behavior may differ across environments, and your mileage will vary.
+>
+> It is intended **for experimentation, learning, and research purposes only**. **Do not deploy it to production** or rely on it for business-critical workflows. No stability, compatibility, or support guarantees are offered at this stage.
+
+## Motivation
+
+Modern software workflows mix two fundamentally different kinds of computation, and treating them the same way is where most LLM-driven automation breaks down.
+
+### Probabilistic work — where LLMs excel
+
+LLMs are **probabilistic** by nature: given the same input they may produce different outputs, and their reasoning is shaped by training data, sampling temperature, and context rather than by explicit rules. This is precisely what makes them powerful for open-ended, judgment-heavy tasks:
+
+- Interpreting ambiguous requirements and proposing approaches
+- Drafting code, refactors, prose, and plans
+- Summarizing, classifying, and extracting from unstructured inputs
+- Exploring a solution space where the "correct" answer isn't known in advance
+
+You *want* variability here — it's how the model surfaces options a rigid rule set never could.
+
+### Deterministic work — where code, not models, belongs
+
+Quality, safety, and compliance are not judgment calls. They are invariants. They must behave the **same way every time**, on every machine, for every input:
+
+- Type checking, linting, and formatting
+- Unit, integration, and end-to-end test suites
+- Schema validation, contract checks, and boundary enforcement
+- Build pipelines, migrations, and release gates
+
+A probabilistic process cannot guarantee any of these. Deterministic scripts can, and should.
+
+### What galloper is trying to be
+
+galloper is a thin, opinionated layer designed to **glue any capable LLM CLI — Claude Code, Codex, Gemini CLI, and others — to a deterministic orchestration shell**. The LLM handles the probabilistic reasoning; galloper provides the edges, boundaries, and verification around it:
+
+- Structured inputs, typed outputs, and persisted session records
+- Lifecycle hooks (pre/post plan, pre/post task, pre/post file) for validation, linting, and gating
+- An event stream for audit, monitoring, and integration with external systems
+- Explicit subcommand routing (`plan`, `implement`) so the probabilistic step is bounded by a deterministic contract
+
+In short: **let the model reason, let the harness verify.**
+
+### Tiered model orchestration
+
+A second goal is cost- and latency-aware model tiering. Not every step needs a frontier model:
+
+- **Planning** — high-capability models (e.g. Claude Opus 4.7, GPT-5.4) decompose the problem and design the approach
+- **Execution & verification** — smaller, faster, cheaper models (e.g. Claude Haiku, GPT-5 mini, Gemini Flash) carry out individual tasks and run validations
+- **Automatic escalation** — when a lighter model detects it is out of its depth, the orchestrator can route specific tasks up to a more capable model, then return to the cheaper tier
+
+The result is a pipeline that spends frontier-model capacity where it actually matters and uses economical models for the bulk of the work — all governed by deterministic rules rather than model whim.
+
+## Documentation
+
+- [Events & Hooks](EVENTS.md) — 20 event types, 6 lifecycle phases, example configuration, firing order
+- [Contributing](CONTRIBUTING.md) — development environment, codebase tour, coding standards, SOLID/clean-architecture enforcement, testing, PR checklist
+- [Troubleshooting](TROUBLESHOOTING.md) — common errors and how to resolve them
+- [Roadmap & Open Questions](ROADMAP.md) — planned directions (semantic search, automatic scaling, context management, user interaction, MCP) with the open design questions still to resolve
+
 ## Features
 
-- **Config-based LLM commands** — Define available commands in `llm-config.json` with a configurable default
+- **Config-based LLM commands** — Define available commands in `galloper.json` with a configurable default
 - **Flexible input** — Accept prompts via CLI (`--prompt`) or file (`--prompt-file`)
 - **Session tracking** — Each run creates a JSON session file with complete execution details
 - **Centralized logging** — Append-only audit trail at `galloper-data/logs/runs.jsonl` for monitoring and debugging
 - **Event parsing** — Extracts JSON-formatted events from Claude Code output
 - **Consolidated data directory** — All runtime data (sessions, logs, plans, executions) live under `galloper-data/`
+- **Hooks & events** — 20 event types and 6 lifecycle phases with configurable handlers for custom automation (see [EVENTS.md](EVENTS.md))
 
 ## Installation
 
@@ -21,22 +82,9 @@ npm install
 
 ## Configuration
 
-Create `llm-config.json` at the repo root:
+Create `galloper.json` at the repo root. See [EVENTS.md](EVENTS.md#example-configuration) for a full sample including hooks.
 
-```json
-{
-  "default": "claude-haiku",
-  "defaultPlanner": "claude-haiku",
-  "defaultExecutioner": "claude-haiku",
-  "commands": {
-    "claude-haiku": {
-      "command": "claude --model claude-haiku-4-5-20251001 --allowedTools * --dangerously-skip-permissions",
-      "allowedSubcommands": [],
-      "disallowedSubcommands": []
-    }
-  }
-}
-```
+Top-level fields:
 
 - **`default`** — The command name to use for `single-prompt` subcommand
 - **`defaultPlanner`** — The command name to use for `plan` subcommand (falls back to `default` if not set)
@@ -44,6 +92,8 @@ Create `llm-config.json` at the repo root:
 - **`commands`** — Object mapping command names to their configuration (command string + subcommand restrictions)
 - **`allowedSubcommands`** — If non-empty, only these subcommands can use this command
 - **`disallowedSubcommands`** — These subcommands cannot use this command
+- **`env`** — Optional map of env vars merged into the subprocess environment (overrides inherited process env on key collision)
+- **`hooks`** — Optional map defining custom handlers for events and lifecycle phases (see [EVENTS.md](EVENTS.md))
 
 The config is required and will be loaded on every run.
 
@@ -57,7 +107,7 @@ The CLI accepts three positional subcommands: `single-prompt`, `plan`, and `impl
 npm run run -- single-prompt --prompt "Your prompt here"
 ```
 
-Uses the `default` command from `llm-config.json`. For basic execution where you send a prompt and get a response.
+Uses the `default` command from `galloper.json`. For basic execution where you send a prompt and get a response.
 
 ### plan — Generate a plan
 
@@ -65,7 +115,7 @@ Uses the `default` command from `llm-config.json`. For basic execution where you
 npm run run -- plan --prompt "Describe the task to plan"
 ```
 
-Uses the `defaultPlanner` command from `llm-config.json` (falls back to `default` if not set). For structured plan generation.
+Uses the `defaultPlanner` command from `galloper.json` (falls back to `default` if not set). For structured plan generation.
 
 ### implement — Execute implementation
 
@@ -73,7 +123,7 @@ Uses the `defaultPlanner` command from `llm-config.json` (falls back to `default
 npm run run -- implement --prompt "Implementation details"
 ```
 
-Uses the `defaultExecutioner` command from `llm-config.json` (falls back to `default` if not set). For code generation and implementation tasks.
+Uses the `defaultExecutioner` command from `galloper.json` (falls back to `default` if not set). For code generation and implementation tasks.
 
 ### Prompt from file
 
@@ -119,7 +169,7 @@ Each run creates a detailed session file at `galloper-data/sessions/{session-id}
 
 Append-only log at `galloper-data/logs/runs.jsonl` (one JSON object per line):
 
-- Tracks all run lifecycle events: `run.started`, `process.spawn`, `process.stdout`, `process.stderr`, `run.completed`, `run.crashed`
+- Tracks all run lifecycle events — see [EVENTS.md](EVENTS.md) for the full list
 - Use for audit trails, monitoring, failure analysis, or forwarding to external logging systems
 
 ## Examples
@@ -162,58 +212,6 @@ npm run run -- plan --prompt "Create a user authentication system"
 
 # Then, implement based on the plan
 npm run run -- implement --prompt "Build the authentication system as planned"
-```
-
-## Architecture
-
-### Core Flow
-
-1. **Parse arguments** — Extract positional subcommand (`single-prompt`, `plan`, or `implement`) and `--prompt` / `--prompt-file`
-2. **Load config** — Read `llm-config.json` and resolve appropriate command based on subcommand type
-3. **Route by subcommand** — For `single-prompt`, execute directly; for `plan` and `implement`, route to specialized workflows
-4. **Spawn subprocess** — Run the resolved command with prompt on stdin
-5. **Capture I/O** — Collect stdout/stderr, immediately log each chunk
-6. **Parse output** — Extract JSON events and final agent message
-7. **Persist results** — Write session file and append to central log
-8. **Return output** — Output JSON with session ID, path, exit code, and final message
-
-### Hook Isolation
-
-The runner sets `CODEX_DISABLE_PROJECT_HOOKS=1` during execution. This prevents parent workspace hooks from running during Codex subprocess execution — galloper is its own Git repository and should not inherit parent configurations.
-
-## Troubleshooting
-
-### Invalid subcommand
-
-```
-Usage: npm run run -- <subcommand> --prompt <prompt>
-Valid subcommands: single-prompt, plan, implement
-```
-
-Use one of the three valid subcommands: `single-prompt`, `plan`, or `implement`.
-
-### Config not found
-
-```
-Failed to load llm-config.json: ...
-```
-
-Ensure `llm-config.json` exists in the repo root with valid JSON.
-
-### Subcommand not allowed for command
-
-```
-Subcommand 'plan' is not allowed for command 'my-command'
-```
-
-Check that the resolved command allows the requested subcommand in `llm-config.json` under `allowedSubcommands` and `disallowedSubcommands`.
-
-### Process errors
-
-Check `galloper-data/logs/runs.jsonl` or the session file for detailed error traces.
-
-```bash
-jq '.error' galloper-data/logs/runs.jsonl | tail -5
 ```
 
 ## Development

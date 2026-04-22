@@ -30,7 +30,7 @@ describe('Positional Subcommand Routing and Restrictions', () => {
     plansDir = join(dataDir, 'plans');
     executionsDir = join(dataDir, 'executions');
     // Uses pipeline config for plan generation tests (needs valid plan JSON)
-    configPath = join(process.cwd(), 'tests/fixtures/llm-config.pipeline.test.json');
+    configPath = join(process.cwd(), 'tests/fixtures/galloper.pipeline.test.json');
 
     const configManager = new ConfigManager({ configPath });
     await configManager.load();

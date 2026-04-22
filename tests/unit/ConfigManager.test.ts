@@ -7,7 +7,7 @@ describe('ConfigManager', () => {
   let configManager: ConfigManager;
 
   beforeEach(() => {
-    configPath = join(process.cwd(), 'tests/fixtures/llm-config.test.json');
+    configPath = join(process.cwd(), 'tests/fixtures/galloper.test.json');
     configManager = new ConfigManager({ configPath });
   });
 
@@ -196,7 +196,7 @@ describe('ConfigManager', () => {
   });
 
   it('should load and validate hooks configuration', async () => {
-    const hooksConfigPath = join(process.cwd(), 'tests/fixtures/llm-config.hooks.test.json');
+    const hooksConfigPath = join(process.cwd(), 'tests/fixtures/galloper.hooks.test.json');
     const cm = new ConfigManager({ configPath: hooksConfigPath });
     const config = await cm.load();
 
@@ -350,7 +350,7 @@ describe('ConfigManager', () => {
   });
 
   it('should accept valid glob patterns without errors', async () => {
-    const hooksConfigPath = join(process.cwd(), 'tests/fixtures/llm-config.hooks.test.json');
+    const hooksConfigPath = join(process.cwd(), 'tests/fixtures/galloper.hooks.test.json');
     const cm = new ConfigManager({ configPath: hooksConfigPath });
     const config = await cm.load();
 

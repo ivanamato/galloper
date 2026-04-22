@@ -44,9 +44,9 @@ export class ConfigManager {
       return this.config;
     } catch (error) {
       if (error instanceof SyntaxError) {
-        throw new Error(`Invalid JSON in llm-config.json: ${error.message}`);
+        throw new Error(`Invalid JSON in galloper.json: ${error.message}`);
       }
-      throw new Error(`Failed to load llm-config.json: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Failed to load galloper.json: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

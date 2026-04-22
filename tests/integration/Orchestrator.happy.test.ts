@@ -30,7 +30,7 @@ describe('Orchestrator - Happy Path Integration', () => {
     plansDir = join(dataDir, 'plans');
     executionsDir = join(dataDir, 'executions');
     // Uses pipeline config because this test runs the planner which needs valid plan JSON
-    configPath = join(process.cwd(), 'tests/fixtures/llm-config.pipeline.test.json');
+    configPath = join(process.cwd(), 'tests/fixtures/galloper.pipeline.test.json');
 
     const configManager = new ConfigManager({ configPath });
     await configManager.load();

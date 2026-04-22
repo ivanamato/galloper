@@ -27,7 +27,7 @@ describe('Orchestrator pipeline', () => {
     const sessionsDir = join(dataDir, 'sessions');
     const plansDir = join(dataDir, 'plans');
     const executionsDir = join(dataDir, 'executions');
-    const configPath = join(process.cwd(), 'tests/fixtures/llm-config.pipeline.test.json');
+    const configPath = join(process.cwd(), 'tests/fixtures/galloper.pipeline.test.json');
 
     configManager = new ConfigManager({ configPath });
     await configManager.load();
@@ -187,7 +187,7 @@ describe('Orchestrator pipeline', () => {
 
   it('should subscribe and dispatch event hooks from config', async () => {
     // Verify that the orchestrator subscribes to event hooks
-    // The hooks are configured in the llm-config.pipeline.test.json fixture
+    // The hooks are configured in the galloper.pipeline.test.json fixture
     const hooksConfig = configManager.getHooks();
 
     // For this test, we just verify that:

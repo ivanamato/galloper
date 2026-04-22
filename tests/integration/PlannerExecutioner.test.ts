@@ -27,7 +27,7 @@ describe('Planner and Executioner', () => {
     plansDir = join(tempDir, 'plans');
     executionsDir = join(tempDir, 'executions');
     // Uses pipeline config because planner needs valid plan JSON (not just event lines)
-    configPath = join(process.cwd(), 'tests/fixtures/llm-config.pipeline.test.json');
+    configPath = join(process.cwd(), 'tests/fixtures/galloper.pipeline.test.json');
 
     const configManager = new ConfigManager({ configPath });
     await configManager.load();

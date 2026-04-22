@@ -11,7 +11,7 @@ tests/
 │   ├── tempDir.ts                    # Temporary workspace creation
 │   └── readJsonl.ts                  # JSONL file parsing
 ├── fixtures/                          # Test configuration and mock commands
-│   ├── llm-config.test.json          # Test LLM configuration
+│   ├── galloper.test.json          # Test LLM configuration
 │   └── mock-commands/                # Mock executable commands
 │       ├── echo-success.sh           # Success with plaintext output
 │       ├── echo-json.sh              # Success with JSON output
@@ -85,7 +85,7 @@ Mock commands simulate LLM output and various failure modes:
 | `impl-fail.sh` | Error to stderr | 2 | Implement subcommand failure |
 
 ### Test Configuration
-`llm-config.test.json` defines mock commands with subcommand restrictions:
+`galloper.test.json` defines mock commands with subcommand restrictions:
 
 ```json
 {
@@ -125,7 +125,7 @@ Mock commands simulate LLM output and various failure modes:
 ### New Mock Command
 1. Create `tests/fixtures/mock-commands/command-name.sh`
 2. Make it executable: `chmod +x`
-3. Add to `llm-config.test.json` with appropriate subcommand restrictions
+3. Add to `galloper.test.json` with appropriate subcommand restrictions
 4. Test: `bash tests/fixtures/mock-commands/command-name.sh < /dev/null`
 
 ## Test Execution Environment

@@ -121,7 +121,7 @@ npm run run -- plan --prompt-file ./task.txt
 
 ### Command Resolution
 
-Each subcommand resolves to an LLM command from `llm-config.json`:
+Each subcommand resolves to an LLM command from `galloper.json`:
 
 1. **`single-prompt`** → uses `config.default`
 2. **`plan`** → uses `config.defaultPlanner` (falls back to `config.default`)
@@ -192,7 +192,7 @@ The `--human-friendly` flag is **independent** from `-v/-vv/-vvv` debug flags an
 
 ## Configuration
 
-### llm-config.json Format
+### galloper.json Format
 
 ```json
 {
@@ -235,7 +235,7 @@ Validation happens at config load time. If `defaultPlanner`/`defaultExecutioner`
 
 ### Hooks and Events
 
-The application emits 20 different event types and supports 6 lifecycle hook phases. These can be configured in the `hooks` section of `llm-config.json` to run custom commands at key points during execution.
+The application emits 20 different event types and supports 6 lifecycle hook phases. These can be configured in the `hooks` section of `galloper.json` to run custom commands at key points during execution.
 
 **See `docs/EVENTS_AND_HOOKS.md` for a complete reference** of all events and lifecycle phases, their payloads, firing order, and example configurations.
 
