@@ -1,6 +1,6 @@
-# Testing Architecture for devflowv3
+# Testing Architecture for galloper
 
-This directory contains comprehensive unit and integration tests for the devflowv3 TypeScript orchestrator.
+This directory contains comprehensive unit and integration tests for the galloper TypeScript orchestrator.
 
 ## Directory Structure
 

@@ -14,7 +14,7 @@ import { ConsoleHumanReporter, NullHumanReporter } from './lib/HumanReporter.js'
 
 const CWD = process.cwd();
 const ROOT_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const DATA_DIR = path.join(CWD, 'devflowv3-data');
+const DATA_DIR = path.join(CWD, 'galloper-data');
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
 const PLANS_DIR = path.join(DATA_DIR, 'plans');
@@ -33,7 +33,7 @@ interface CliArgs {
 }
 
 function printUsage(): void {
-  process.stderr.write(`Usage: devflowv3 <subcommand> [options]
+  process.stderr.write(`Usage: galloper <subcommand> [options]
 
 Subcommands:
   single-prompt     Send a prompt and get a response (default command)
@@ -52,10 +52,10 @@ Options:
   --human-friendly, -H   Human-friendly progress output (independent from -v flags)
 
 Examples:
-  devflowv3 single-prompt --prompt "Hello, Claude!"
-  devflowv3 plan --prompt-file ./task.txt -v
-  devflowv3 implement --plan-file ./devflowv3-data/plans/plan.json -vv
-  devflowv3 pipeline --prompt "Build and execute a complete plan" -vvv
+  galloper single-prompt --prompt "Hello, Claude!"
+  galloper plan --prompt-file ./task.txt -v
+  galloper implement --plan-file ./galloper-data/plans/plan.json -vv
+  galloper pipeline --prompt "Build and execute a complete plan" -vvv
 `);
 }
 
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
   if (args.subcommand !== 'implement') {
     prompt = await resolvePrompt(args);
     if (!prompt) {
-      throw new Error('Missing prompt. Use: devflowv3 <subcommand> --prompt "..." or --prompt-file ./path');
+      throw new Error('Missing prompt. Use: galloper <subcommand> --prompt "..." or --prompt-file ./path');
     }
   }
 

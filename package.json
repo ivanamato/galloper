@@ -1,10 +1,10 @@
 {
-  "name": "devflowv3",
+  "name": "galloper",
   "private": true,
   "version": "0.2.0",
   "type": "module",
   "bin": {
-    "devflowv3": "dist/run-llm-session.js"
+    "galloper": "dist/run-llm-session.js"
   },
   "scripts": {
     "build": "tsc",

@@ -21,7 +21,7 @@ describe('Orchestrator pipeline', () => {
 
   beforeEach(async () => {
     tempDir = createTempWorkspace();
-    const dataDir = join(tempDir, 'devflowv3-data');
+    const dataDir = join(tempDir, 'galloper-data');
     logsDir = join(dataDir, 'logs');
     logPath = join(logsDir, 'runs.jsonl');
     const sessionsDir = join(dataDir, 'sessions');

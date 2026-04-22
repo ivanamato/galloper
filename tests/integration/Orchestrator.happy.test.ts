@@ -23,7 +23,7 @@ describe('Orchestrator - Happy Path Integration', () => {
 
   beforeEach(async () => {
     tempDir = createTempWorkspace();
-    const dataDir = join(tempDir, 'devflowv3-data');
+    const dataDir = join(tempDir, 'galloper-data');
     logsDir = join(dataDir, 'logs');
     logPath = join(logsDir, 'runs.jsonl');
     sessionsDir = join(dataDir, 'sessions');

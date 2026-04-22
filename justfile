@@ -1,4 +1,4 @@
-# devflowv3 justfile - development automation
+# galloper justfile - development automation
 # Run 'just' or 'just help' to see available commands
 
 set unstable := true
@@ -13,7 +13,7 @@ default:
 
 # Show available commands
 help:
-    @echo "devflowv3 v{{version}} - Development Commands"
+    @echo "galloper v{{version}} - Development Commands"
     @echo ""
     @just --list --unsorted
 
@@ -45,7 +45,7 @@ test-watch:
 test-coverage:
     npm run test:coverage
 
-# Run devflowv3 with arguments (e.g., 'just dev single-prompt --prompt "hello"')
+# Run galloper with arguments (e.g., 'just dev single-prompt --prompt "hello"')
 dev *ARGS:
     npm run run -- {{ARGS}}
 
@@ -53,12 +53,12 @@ dev *ARGS:
 clean:
     @echo "Cleaning..."
     rm -rf dist/
-    rm -rf devflowv3-data/
-    @echo "✓ Cleaned: dist/ and devflowv3-data/"
+    rm -rf galloper-data/
+    @echo "✓ Cleaned: dist/ and galloper-data/"
 
 # Show version
 version:
-    @echo "devflowv3 v{{version}}"
+    @echo "galloper v{{version}}"
 
 # Bump patch version (0.2.0 -> 0.2.1)
 bump-patch:
@@ -90,8 +90,8 @@ update:
 
 # Show project status
 status:
-    @echo "devflowv3 status:"
+    @echo "galloper status:"
     @echo "  Version: {{version}}"
     @echo "  Node: $(node --version)"
     @if [ -d dist ]; then echo "  Built: yes"; else echo "  Built: no"; fi
-    @if [ -d devflowv3-data ]; then echo "  Data dir: yes"; else echo "  Data dir: no"; fi
+    @if [ -d galloper-data ]; then echo "  Data dir: yes"; else echo "  Data dir: no"; fi

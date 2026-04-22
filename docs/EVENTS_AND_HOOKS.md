@@ -1,6 +1,6 @@
 # Events and Hooks Reference
 
-This document describes all events and lifecycle hooks emitted by devflowv3. Configure handlers for these in `llm-config.json` under `hooks.events` and `hooks.lifecycle`.
+This document describes all events and lifecycle hooks emitted by galloper. Configure handlers for these in `llm-config.json` under `hooks.events` and `hooks.lifecycle`.
 
 ## Events
 
@@ -37,13 +37,13 @@ Events are fired at key points during execution. Subscribe to them via `hooks.ev
     "events": {
       "run.started": [
         {
-          "command": "echo '[run.started]' >> devflowv3-data/hooks.log",
+          "command": "echo '[run.started]' >> galloper-data/hooks.log",
           "timeoutMs": 3000
         }
       ],
       "task.completed": [
         {
-          "command": "echo '[task.completed]' >> devflowv3-data/hooks.log",
+          "command": "echo '[task.completed]' >> galloper-data/hooks.log",
           "timeoutMs": 3000
         }
       ]
@@ -86,14 +86,14 @@ Each hook in `hooks.lifecycle` can specify:
     "lifecycle": {
       "pre-plan": [
         {
-          "command": "echo '[pre-plan] Checking environment' >> devflowv3-data/hooks.log",
+          "command": "echo '[pre-plan] Checking environment' >> galloper-data/hooks.log",
           "timeoutMs": 5000,
           "onFailure": "warn"
         }
       ],
       "post-task": [
         {
-          "command": "echo '[post-task] Cleanup' >> devflowv3-data/hooks.log",
+          "command": "echo '[post-task] Cleanup' >> galloper-data/hooks.log",
           "timeoutMs": 5000,
           "onFailure": "warn"
         }

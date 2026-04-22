@@ -1,4 +1,4 @@
-# devflowv3
+# galloper
 
 A minimal Node.js runner for executing Claude Code (Codex) commands programmatically. Use it to orchestrate multiple Claude Code runs, batch process prompts, integrate with external systems, or test Claude Code automation.
 
@@ -7,9 +7,9 @@ A minimal Node.js runner for executing Claude Code (Codex) commands programmatic
 - **Config-based LLM commands** — Define available commands in `llm-config.json` with a configurable default
 - **Flexible input** — Accept prompts via CLI (`--prompt`) or file (`--prompt-file`)
 - **Session tracking** — Each run creates a JSON session file with complete execution details
-- **Centralized logging** — Append-only audit trail at `devflowv3-data/logs/runs.jsonl` for monitoring and debugging
+- **Centralized logging** — Append-only audit trail at `galloper-data/logs/runs.jsonl` for monitoring and debugging
 - **Event parsing** — Extracts JSON-formatted events from Claude Code output
-- **Consolidated data directory** — All runtime data (sessions, logs, plans, executions) live under `devflowv3-data/`
+- **Consolidated data directory** — All runtime data (sessions, logs, plans, executions) live under `galloper-data/`
 
 ## Installation
 
@@ -92,7 +92,7 @@ Each run outputs a JSON object to stdout:
 ```json
 {
   "sessionId": "2026-04-17T12-48-19-722Z-d3b46482-ea5d-4e4d-82c4-0a0a0d0a928a",
-  "sessionFilePath": "/path/to/devflowv3-data/sessions/2026-04-17T12-48-19-722Z-d3b46482-ea5d-4e4d-82c4-0a0a0d0a928a.json",
+  "sessionFilePath": "/path/to/galloper-data/sessions/2026-04-17T12-48-19-722Z-d3b46482-ea5d-4e4d-82c4-0a0a0d0a928a.json",
   "exitCode": 0,
   "finalOutput": "The last message from Claude Code"
 }
@@ -100,7 +100,7 @@ Each run outputs a JSON object to stdout:
 
 ### Session Files
 
-Each run creates a detailed session file at `devflowv3-data/sessions/{session-id}.json`:
+Each run creates a detailed session file at `galloper-data/sessions/{session-id}.json`:
 
 | Field | Description |
 |-------|-------------|
@@ -117,7 +117,7 @@ Each run creates a detailed session file at `devflowv3-data/sessions/{session-id
 
 ### Central Log
 
-Append-only log at `devflowv3-data/logs/runs.jsonl` (one JSON object per line):
+Append-only log at `galloper-data/logs/runs.jsonl` (one JSON object per line):
 
 - Tracks all run lifecycle events: `run.started`, `process.spawn`, `process.stdout`, `process.stderr`, `run.completed`, `run.crashed`
 - Use for audit trails, monitoring, failure analysis, or forwarding to external logging systems
@@ -179,7 +179,7 @@ npm run run -- implement --prompt "Build the authentication system as planned"
 
 ### Hook Isolation
 
-The runner sets `CODEX_DISABLE_PROJECT_HOOKS=1` during execution. This prevents parent workspace hooks from running during Codex subprocess execution — devflowv3 is its own Git repository and should not inherit parent configurations.
+The runner sets `CODEX_DISABLE_PROJECT_HOOKS=1` during execution. This prevents parent workspace hooks from running during Codex subprocess execution — galloper is its own Git repository and should not inherit parent configurations.
 
 ## Troubleshooting
 
@@ -210,10 +210,10 @@ Check that the resolved command allows the requested subcommand in `llm-config.j
 
 ### Process errors
 
-Check `devflowv3-data/logs/runs.jsonl` or the session file for detailed error traces.
+Check `galloper-data/logs/runs.jsonl` or the session file for detailed error traces.
 
 ```bash
-jq '.error' devflowv3-data/logs/runs.jsonl | tail -5
+jq '.error' galloper-data/logs/runs.jsonl | tail -5
 ```
 
 ## Development
@@ -221,7 +221,7 @@ jq '.error' devflowv3-data/logs/runs.jsonl | tail -5
 Session files and logs are created on every run. Clean up old data:
 
 ```bash
-rm -rf devflowv3-data/
+rm -rf galloper-data/
 ```
 
-The `.gitignore` excludes `devflowv3-data/` from version control.
+The `.gitignore` excludes `galloper-data/` from version control.

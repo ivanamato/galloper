@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export function createTempWorkspace(): string {
-  const dir = join(tmpdir(), `devflowv3-test-${randomUUID()}`);
+  const dir = join(tmpdir(), `galloper-test-${randomUUID()}`);
   mkdirSync(dir, { recursive: true });
   mkdirSync(join(dir, 'sessions'), { recursive: true });
   mkdirSync(join(dir, 'logs'), { recursive: true });

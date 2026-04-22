@@ -7,7 +7,7 @@ npm-debug.log
 dist/
 
 # Runtime artifacts (created by tests and execution)
-devflowv3-data/
+galloper-data/
 coverage/
 
 # IDE

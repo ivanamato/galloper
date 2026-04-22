@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Purpose
 
-**devflowv3** is a production-grade TypeScript orchestrator for executing Claude Code commands programmatically. It:
+**galloper** is a production-grade TypeScript orchestrator for executing Claude Code commands programmatically. It:
 - Provides a layered architecture: CLI → Orchestrator → Core execution engine
 - Supports high-level orchestration commands (e.g., `--orchestration-command plan`) that map to LLM commands
 - Spawns subprocess runners with that command and streams stdin prompts
@@ -113,7 +113,7 @@ npm run run -- single-prompt --prompt "Your prompt"
 npm run run -- plan --prompt "Task to plan"
 
 # implement: execute implementation based on a plan file (uses defaultExecutioner)
-npm run run -- implement --plan-file ./devflowv3-data/plans/plan.json
+npm run run -- implement --plan-file ./galloper-data/plans/plan.json
 
 # Prompt from file
 npm run run -- plan --prompt-file ./task.txt
@@ -144,7 +144,7 @@ Examples:
 ```bash
 npm run run -- single-prompt --prompt "Hello" -v                      # Basic verbosity
 npm run run -- plan --prompt-file task.txt -vv                        # Detail level
-npm run run -- implement --plan-file ./devflowv3-data/plans/plan.json # Full debug output
+npm run run -- implement --plan-file ./galloper-data/plans/plan.json # Full debug output
 ```
 
 ### Human-friendly Progress
@@ -178,8 +178,8 @@ The `--human-friendly` flag is **independent** from `-v/-vv/-vvv` debug flags an
 | `just test` | Run full test suite |
 | `just test-watch` | Run tests in watch mode |
 | `just test-coverage` | Run tests with coverage report |
-| `just dev <args>` | Run devflowv3 with arguments (e.g., `just dev plan --prompt "x"`) |
-| `just clean` | Remove `dist/` and `devflowv3-data/` directories |
+| `just dev <args>` | Run galloper with arguments (e.g., `just dev plan --prompt "x"`) |
+| `just clean` | Remove `dist/` and `galloper-data/` directories |
 | `just version` | Show current version |
 | `just bump-patch` | Bump patch version (e.g., 0.2.0 → 0.2.1) |
 | `just bump-minor` | Bump minor version (e.g., 0.2.0 → 0.3.0) |
@@ -247,7 +247,7 @@ Each hook/event can have one or more handlers (command to run, with optional tim
 
 ## Session Files
 
-Each run creates a typed `SessionRecord` at `devflowv3-data/sessions/{session-id}.json`:
+Each run creates a typed `SessionRecord` at `galloper-data/sessions/{session-id}.json`:
 
 ```typescript
 interface SessionRecord {
@@ -274,7 +274,7 @@ All commands return:
 ```json
 {
   "sessionId": "2026-04-17T13-29-38-981Z",
-  "sessionFilePath": "/path/to/devflowv3-data/sessions/2026-04-17T13-29-38-981Z.json",
+  "sessionFilePath": "/path/to/galloper-data/sessions/2026-04-17T13-29-38-981Z.json",
   "exitCode": 0,
   "finalOutput": "The extracted final message from stdout"
 }
@@ -284,7 +284,7 @@ Type: `OrchestratorResult`
 
 ## Central Log
 
-Append-only JSONL file at `devflowv3-data/logs/runs.jsonl` with all events typed as `LogEvent`:
+Append-only JSONL file at `galloper-data/logs/runs.jsonl` with all events typed as `LogEvent`:
 
 **Event Types:**
 - `run.started` — Orchestration beginning (includes prompt, command, cwd)
