@@ -235,6 +235,43 @@ After each task — or at configurable checkpoints — a reevaluation step asks 
 - **Infrastructure-as-code (Terraform / Pulumi)** — `post-task-file` running `terraform fmt` / `terraform validate`, `post-plan` enforcing that changes to prod modules are flagged for human review via a blocking hook.
 - **Documentation-only project (Markdown/MkDocs)** — `post-task-file` running `markdownlint` and a link checker, `post-task` running the docs build to catch broken cross-refs.
 
+### LLM-assisted hook & QA-gate generation
+
+**Intent.** Static templates only take a user so far — every real project has idiosyncrasies no preset can anticipate. In addition to the curated examples above, galloper should be able to **generate a tailored hook suite for an unknown project** by combining deterministic project discovery with an LLM proposal step. The discovery phase collects objective signals (manifest files, dependency lists, detected test runners, linter configs, CI files, directory conventions); the LLM then proposes a `galloper.json` whose hook suite matches what the project actually uses, with each hook annotated with a short rationale.
+
+**How it composes.** This is the LLM-driven upgrade path for onboarding (§2). `galloper init` can offer a "generate from project" mode alongside the static `--template` presets; `galloper doctor` can suggest *additions* to an existing config when new tooling appears in the repo (e.g. a new `ruff.toml` shows up — propose a `post-task-file` entry for it).
+
+**Discovery signals (deterministic).** No model call needed for these — they are pure file inspection:
+- Package manifests: `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `Gemfile`, `composer.json`
+- Tooling configs: `eslint.config.*`, `prettier.config.*`, `tsconfig.json`, `ruff.toml`, `mypy.ini`, `.golangci.yml`, `rustfmt.toml`, `.editorconfig`
+- Test frameworks: presence of `vitest.config.*`, `jest.config.*`, `pytest.ini`, `go test` targets, `cargo test` conventions
+- Monorepo markers: `pnpm-workspace.yaml`, `turbo.json`, `nx.json`, `lerna.json`
+- CI files: `.github/workflows/*.yml`, `.gitlab-ci.yml` — as strong evidence of what the project considers its quality bar
+- Directory shape: `src/` vs. `packages/` vs. `cmd/` + `internal/` vs. `apps/` + `libs/`
+
+**LLM proposal step (probabilistic, gated).** With signals in hand, the model is asked to produce a `galloper.json` that:
+- Maps each detected tool to the appropriate lifecycle phase (`post-task-file` for formatters/linters, `post-task` for test suites, `pre-plan` for architectural steering)
+- Scopes globs correctly (per-workspace in monorepos, per-language in polyglot repos)
+- Adds a one-line rationale per hook so the user can audit the proposal
+- Leaves a clearly marked "unsure — review" section for anything it couldn't confidently place
+
+**Design constraints.**
+- The output must round-trip through galloper's real config loader before being written. A proposal that fails validation is never persisted.
+- Proposals are **diffs against the current config**, not replacements. If a `galloper.json` already exists, the user sees an additive or corrective patch, never an overwrite.
+- Every generated hook must carry its discovery rationale (as a sibling doc or inline comment equivalent) — a user must be able to tell *why* each hook was proposed.
+- The generation step is **opt-in and cached**. Repeated `galloper init` runs should not re-ask the model unless the discovery signals have changed.
+- Generated configs are treated as **starting points, not endorsements**. The README produced alongside must reiterate that every hook should be reviewed before it runs destructive commands.
+
+**Open questions.**
+- Which model runs the generation — whatever `defaultPlanner` resolves to, a dedicated `configGenerator` role, or a fixed recommendation? This matters because the user may not yet have a planner configured (chicken-and-egg with onboarding).
+- Should generation be a single-shot LLM call, or a small agentic loop (propose → validate → refine on validation errors)? The latter is more robust but more expensive.
+- How does the generator know what the user *wants* enforced vs. merely what is *present*? A quick questionnaire before the model call ("block merges on test failure? warn or retry on lint?") vs. inferring from CI severity.
+- How are proposals versioned — alongside the static templates, or as run artifacts under `galloper-data/`?
+- How much of the output belongs in `galloper.json` vs. a companion `galloper.generated.md` with the rationales, keeping the config file itself clean?
+- Interaction with reevaluation (§3): if the project acquires new tooling mid-run, should the pipeline itself propose hook additions, or is that strictly a separate `galloper doctor` concern?
+
+---
+
 **Design constraints.**
 - Each example must actually run — a contributor should be able to `git clone`, follow the README, and see hooks firing on a real sample prompt.
 - Examples should be **minimal but realistic**. Prefer small, representative hook suites over exhaustive ones; quality of explanation beats quantity of hooks.
