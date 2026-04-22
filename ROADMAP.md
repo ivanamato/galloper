@@ -288,6 +288,58 @@ After each task — or at configurable checkpoints — a reevaluation step asks 
 
 ---
 
+## 11. Hook Coverage for Undeclared File Changes
+
+**Intent.** galloper's `pre-task-file` / `post-task-file` hooks match against declared globs, which implicitly assumes the set of files a task touches is either listed ahead of time or matches a pattern the user knew to configure. In practice, even with a carefully structured prompt enumerating expected files, LLMs routinely write outside that list — a dependency gets bumped in `package.json`, a sibling config gets tweaked, a helper two directories over gets refactored as a side effect. Those out-of-manifest changes **escape the hook system entirely**. galloper needs a way to detect and gate file changes the model made but did not declare, or the whole premise of "deterministic edges around a probabilistic step" has a hole in it.
+
+**Why this matters.** It's the central trust boundary. A QA gate that lints `src/**/*.ts` is meaningless if the model can silently edit `scripts/release.sh` and slip past the linter. "Only what was declared is checked" is an invariant by accident, not by design.
+
+**Primary approach: post-hoc diff against the workspace.**
+
+```
+  pre-task   ──►  capture baseline (git rev / snapshot)
+                  │
+                  ▼
+  task runs  ──►  LLM writes — declared and undeclared
+                  │
+                  ▼
+  post-task  ──►  diff workspace vs. baseline
+                  │
+        ┌─────────┴──────────┐
+        ▼                    ▼
+   declared paths         surprise paths
+   → normal hooks         → `task.file.undeclared`
+                          → policy: warn / retry / abort
+                          → optionally run matching hooks anyway
+```
+
+The default implementation is `git diff` against a baseline captured at `pre-task`. It's cheap, deterministic, well understood, and the common case (project is a git repo) makes it free. For non-git workspaces (docs projects, iac without VCS, scratch dirs), fall back to a pre/post filesystem snapshot with content hashing.
+
+**Multi-repo implication (acknowledged).** A single `git diff` only covers the repo galloper is running in. Real workspaces are often multi-root: a monorepo where the touched file lives in a sibling package with its own `.git` boundary, a setup where galloper runs from one repo but the LLM also modifies a linked repo checked out nearby, a dev environment with generated artifacts in an ignored submodule. Solving undeclared-change detection properly **requires first-class multi-repo / multi-worktree support** in galloper — which is a real scope increase and should be called out up front, not smuggled in. Without it, a "safe" single-repo check creates false confidence the moment the workspace gets more complex.
+
+**Alternative / complementary approaches.**
+
+- **Filesystem watcher.** Install an inotify/fsevents watcher for the duration of the task and collect the union of written paths. No git dependency, but platform-dependent and noisy (editors, build caches, language servers).
+- **Pre/post filesystem snapshot with hashing.** Simpler than a live watcher, slower than a git diff; useful as the non-git fallback.
+- **LLM-side enforcement via tool protocol.** Where the underlying CLI exposes structured tool calls, intercept file-write calls and validate against the declared manifest *before* the write. Strongest guarantee, but couples galloper to each CLI's tool schema — heavy and fragile.
+
+**Design constraints.**
+- Default to the git-diff path when a repo is present — cheapest, most common, zero new dependencies. Fall back to snapshot only when git is unavailable.
+- Must classify every post-task change as **expected** (matches declared manifest / glob) or **surprise** (doesn't). Expected changes run through the normal `post-task-file` hooks. Surprise changes flow through a separate, louder path — a dedicated event, a configurable policy (`warn` / `retry` / `abort`), and optional opt-in to run matching hooks against them anyway.
+- Detection must be **unavoidable from the model's perspective**. The orchestrator, not the model, owns the manifest of what was actually touched. A model that hides writes by omitting them from its output still can't hide them from the diff.
+- Multi-repo support, when it lands, must be an explicit, declared set of tracked roots — not auto-detected magic. Surprise writes to an undeclared root are themselves a surprise.
+
+**Open questions.**
+- Single-repo diff is straightforward; what is the right **data model for multi-repo**? A `workspace.roots` list in `galloper.json`, an auto-discovered set via `git worktree list` / submodule parsing, or a first-class `workspace` concept independent of git?
+- What is the right **default policy** on a surprise change — `warn`, `retry`, or `abort`? Likely `warn` for README/config tweaks, `abort` for source under strict gate patterns — but the defaults need concrete guidelines, not vibes.
+- Where does the baseline live? A captured ref at `pre-task` (git stash or revision hash), a full filesystem snapshot under `galloper-data/baselines/{session-id}/`, or both for cross-checking?
+- How does this interact with a **pre-existing dirty working tree**? Refuse to start? Treat the task-start state as baseline regardless of cleanliness? Require `--allow-dirty`?
+- How does undeclared-change detection feed the adaptive loop (§3)? A surprise write is a prime reevaluation trigger — *"the model touched something it didn't plan to; is the plan still correct?"*
+- What is the cost of `git status` + targeted `git diff` per task on large repos / long pipelines? Measurable but probably acceptable; pathological monorepos may need scoping.
+- What gets reported to the user — a flat list of surprise paths, a classified list (source / config / generated / tooling), or a structured `task.file.undeclared` event per path the dashboard (§8) and TUI (§9) can render?
+
+---
+
 ## Feedback
 
 These are all open design threads. If you have experience with any of them — especially in production orchestration systems, multi-model pipelines, or MCP integrations — please open an issue or discussion. The goal of this document is to make the unknowns explicit, not to pretend they're solved.
