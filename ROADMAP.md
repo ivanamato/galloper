@@ -28,7 +28,34 @@ This document tracks areas galloper is actively exploring. Each section lists th
 
 ---
 
-## 2. Automatic Model Scaling
+## 2. User Onboarding & Configuration Discovery
+
+**Intent.** galloper's surface area — commands, hooks, events, model tiers, retrieval backends — is small today and will keep growing. Writing a correct `galloper.json` by hand is already non-trivial and will get worse. A first-run experience should **make the easy path genuinely easy**: detect what the user has installed, propose a sensible default config, explain the available knobs in context, and let power users drop back to hand-editing at any point. Onboarding is not a nice-to-have; for an alpha tool asking users to trust it with code, it is the difference between being tried and being ignored.
+
+**Design constraints.**
+- Must never silently write an unusable config. Anything generated must validate against the same loader that runs at execution time.
+- Must be **non-destructive**. If a `galloper.json` already exists, onboarding augments or diffs — it does not overwrite without explicit consent.
+- Must degrade to plain prompts (or fully scripted/flag-driven invocation) so it works in non-TTY contexts, CI bootstraps, and dotfile-style provisioning.
+- Must be the **preferred front-end for the TUI** (see §8). The onboarding flow and the TUI share the same problem — presenting galloper's state and accepting structured input interactively — so they should share the same components and rendering layer rather than growing two parallel implementations. The TUI milestone is a natural home for a richer, ongoing configuration surface; onboarding is its first chapter.
+
+**Scope sketch.**
+
+- **`galloper init`** — scaffold a `galloper.json` by detecting installed LLM CLIs (Claude Code, Codex, Gemini CLI, others), asking which to wire up, and picking sensible defaults for `default` / `defaultPlanner` / `defaultExecutioner`.
+- **`galloper doctor`** — validate the current config against the binaries, paths, and environment it references; report missing commands, unresolvable subcommand restrictions, broken hook globs, and invalid event names with a clear fix for each.
+- **Template starters** — a minimal set of `galloper init --template <name>` presets tied to the reference project examples (see §9), so a React or Go project can start with a hook suite that already makes sense.
+- **In-flow discovery** — when a user runs an unknown subcommand, mistypes a command name, or references an undefined hook phase, surface the nearest valid option and a link to the relevant doc rather than a bare stack trace.
+
+**Open questions.**
+- Is `init` a subcommand of `galloper` or a separate companion binary? Bundled is simpler for users; separate keeps the core tight.
+- How aggressive should auto-detection be? Does galloper shell out to each candidate CLI to check versions, or only look for binaries on `$PATH`? Version drift is a real failure mode.
+- What's the split between `init` (one-shot) and an ongoing configuration UI in the TUI? The cleanest answer is probably that `init` is a scripted path through the same components the TUI exposes continuously.
+- Should onboarding ever write to anything outside the repo (a user-level default, a shell completion file, an editor snippet)? If yes, it must be explicit and reversible.
+- How are templates versioned and kept current as the hook/event surface evolves? Same CI pressure as the reference examples (§9).
+- For `doctor`, what's the right severity model — errors/warnings/info, or a single pass/fail? The project's "loud failures are a feature" stance suggests erring toward errors by default.
+
+---
+
+## 3. Automatic Model Scaling
 
 **Intent.** A run should dynamically escalate or de-escalate the model handling a task based on observed difficulty. Cheap models handle the bulk; frontier models are engaged only when warranted.
 
@@ -47,7 +74,7 @@ This document tracks areas galloper is actively exploring. Each section lists th
 
 ---
 
-## 3. Cross-Tool Context Management
+## 4. Cross-Tool Context Management
 
 **Intent.** When a pipeline spans multiple LLM CLIs (plan with one, implement with another, validate with a third), the relevant context — decisions made, constraints discovered, files touched, rationale — must flow between them in a structured, lossless way. Today this is handled only crudely at the plan → implement boundary and needs to become a first-class concern.
 
@@ -65,7 +92,7 @@ This document tracks areas galloper is actively exploring. Each section lists th
 
 ---
 
-## 4. User Interaction During Pipeline Execution
+## 5. User Interaction During Pipeline Execution
 
 **Intent.** Today, `pipeline` generates a plan and immediately executes it end-to-end with no human in the loop. In practice, a plan is often wrong or subtly misaligned, and correcting it after implementation is far more expensive than steering it before. galloper should offer opt-in, lightweight interaction points where the user can confirm, amend, or redirect.
 
@@ -83,7 +110,7 @@ This document tracks areas galloper is actively exploring. Each section lists th
 
 ---
 
-## 5. MCP Server Exposure
+## 6. MCP Server Exposure
 
 **Intent.** Once galloper is stable enough to be trusted as an orchestration layer, it should expose itself as an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server. Other LLM CLIs could then use galloper directly as an orchestration tool — delegating planning, task decomposition, and deterministic validation to it rather than reimplementing the logic.
 
@@ -97,11 +124,11 @@ This document tracks areas galloper is actively exploring. Each section lists th
 - How are long-running runs modeled? Streamed progress via MCP notifications, or session-id + poll?
 - How does authentication and sandboxing work when galloper is invoked by another agent? Can certain subcommands or commands be gated at the MCP layer?
 - Does galloper-as-MCP-server expose the inner LLM CLIs transparently, or only the orchestration primitives?
-- How does interaction (see §4) translate over MCP — does the caller become the "user" answering checkpoints?
+- How does interaction (see §5) translate over MCP — does the caller become the "user" answering checkpoints?
 
 ---
 
-## 6. HTTP Dashboard
+## 7. HTTP Dashboard
 
 **Intent.** Runs produce a lot of structured state — session records, central logs, events, plans, task attempts, hook results — that today is only observable by tailing JSONL files or opening session JSONs by hand. A local HTTP dashboard would make that state legible in real time: metrics, run history, live event streams, and — potentially — a lightweight UI where a user can interact with a running pipeline alongside the CLI (approving plans, injecting steering notes, marking tasks).
 
@@ -113,27 +140,28 @@ This document tracks areas galloper is actively exploring. Each section lists th
 
 **Open questions.**
 - What ships first — a pure observer (metrics + run list + log viewer) or an interactive surface (approve/redirect)? They are very different scopes.
-- What metrics are worth surfacing? Runs per day, pass/fail rate, mean duration, per-command cost/latency, retry rate, hook-failure rate, model-tier distribution (once §2 lands)?
+- What metrics are worth surfacing? Runs per day, pass/fail rate, mean duration, per-command cost/latency, retry rate, hook-failure rate, model-tier distribution (once §3 lands)?
 - How is the server launched — a `galloper dashboard` subcommand, a separate binary, a flag on normal runs? Always-on or on-demand?
 - Does the dashboard tail live runs by polling the log, or does galloper expose an event-stream endpoint (SSE/WebSocket) that handlers subscribe to? If the latter, the event bus becomes a shared dependency of CLI + dashboard.
-- How does "work alongside the CLI" reconcile with user interaction (§4) — is the dashboard just another front-end to the same interaction protocol, or does it have its own?
+- How does "work alongside the CLI" reconcile with user interaction (§5) — is the dashboard just another front-end to the same interaction protocol, or does it have its own?
 - Authentication: loopback-only, shared-secret token, OS user check? What is the minimum viable bar for a local tool that occasionally exposes approve/abort?
 - How much of this belongs in-tree vs. as a separate repo/package consuming galloper's artifacts?
 
 ---
 
-## 7. TUI (Terminal UI)
+## 8. TUI (Terminal UI)
 
-**Intent.** A terminal UI would give users the same observability and interaction benefits as the HTTP dashboard (§6) without leaving the terminal — a live view of the current run, the plan tree, task status, streamed output, and inline approval prompts. It fits the CLI-first ethos and works equally well over SSH or in CI shells.
+**Intent.** A terminal UI would give users the same observability and interaction benefits as the HTTP dashboard (§7) without leaving the terminal — a live view of the current run, the plan tree, task status, streamed output, and inline approval prompts. It fits the CLI-first ethos and works equally well over SSH or in CI shells. It is also the natural home for the ongoing configuration surface introduced by onboarding (§2).
 
 **Design constraints.**
 - Must degrade gracefully. In dumb terminals, non-TTY contexts, or CI, the TUI should either not activate or fall back to plain logging — never corrupt output.
-- Must share its data model with the dashboard (§6) and the event stream. Two parallel view implementations is a trap.
+- Must share its data model with the dashboard (§7) and the event stream. Two parallel view implementations is a trap.
 - Must not become the default for `just dev` / `npm run run` invocations. Structured JSON output on stdout is contract; the TUI is opt-in (a flag, a separate subcommand, or a separate binary).
 - Should stay small. A heavy TUI framework is a disproportionate dependency for a tool whose core is a few hundred lines of orchestration.
+- Should share components with the onboarding flow (§2). `galloper init` is effectively a scripted walk through a subset of the TUI's configuration views; building them twice would be wasted work.
 
 **Open questions.**
-- **When** should this land? Probably *after* the event bus / shared data model solidifies (tied to §6) — building the TUI first risks hard-coding assumptions that a dashboard later has to relitigate.
+- **When** should this land? Probably *after* the event bus / shared data model solidifies (tied to §7) — building the TUI first risks hard-coding assumptions that a dashboard later has to relitigate.
 - What's the minimum useful surface? A live run view (events + current task + output tail), a run-history picker, or an interactive pipeline controller?
 - Invocation model: `galloper watch`, `galloper run --tui`, or a sibling binary (`galloper-tui`)? Each has different tradeoffs for packaging and default behavior.
 - Framework choice: a lightweight renderer (raw ANSI + a small helper), [Ink](https://github.com/vadimdemedes/ink), [blessed](https://github.com/chjj/blessed), or [ratatui](https://github.com/ratatui-org/ratatui)-style via a non-Node component? The answer is entangled with the dependency-footprint rule.
@@ -143,7 +171,7 @@ This document tracks areas galloper is actively exploring. Each section lists th
 
 ---
 
-## 8. Reference Project Examples
+## 9. Reference Project Examples
 
 **Intent.** galloper's power comes from how hooks, events, and subcommand routing are composed for a given project — but without worked examples, new users have to derive the pattern from first principles. A curated set of **reference project templates** would show, end-to-end, how to wire galloper into common real-world stacks. Each example would ship a working `galloper.json` (including a realistic hook suite), a sample prompt, and a short README explaining *why* each hook exists — not just *what* it does.
 

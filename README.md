@@ -10,50 +10,52 @@ A minimal Node.js runner for executing Claude Code (Codex) commands programmatic
 
 ## Motivation
 
-Modern software workflows mix two fundamentally different kinds of computation, and treating them the same way is where most LLM-driven automation breaks down.
+Most LLM-driven automation breaks down because it treats two different kinds of work the same way.
 
-### Probabilistic work — where LLMs excel
+| | **Probabilistic** (use an LLM) | **Deterministic** (use code) |
+|---|---|---|
+| Nature | Same input → possibly different output | Same input → same output, always |
+| Good at | Judgment, drafting, exploration, ambiguity | Invariants, gates, verification |
+| Examples | Plans, refactors, summaries, classifications | Lint, tests, schema checks, release gates |
+| Variability is… | A feature — surfaces options rules can't | A bug — breaks the guarantee |
 
-LLMs are **probabilistic** by nature: given the same input they may produce different outputs, and their reasoning is shaped by training data, sampling temperature, and context rather than by explicit rules. This is precisely what makes them powerful for open-ended, judgment-heavy tasks:
+**The guiding rule:** *let the model reason, let the harness verify.*
 
-- Interpreting ambiguous requirements and proposing approaches
-- Drafting code, refactors, prose, and plans
-- Summarizing, classifying, and extracting from unstructured inputs
-- Exploring a solution space where the "correct" answer isn't known in advance
+```
+           ┌────────────────────────────────────────────┐
+ prompt ──►│  probabilistic step  (LLM CLI — any)       │
+           │  reason, draft, decompose                  │
+           └──────────────────┬─────────────────────────┘
+                              │  structured output
+                              ▼
+           ┌────────────────────────────────────────────┐
+ galloper  │  deterministic shell                       │
+ is this ──►│  hooks · events · validation · routing    │
+           │  lint, test, schema, gate, persist, log    │
+           └──────────────────┬─────────────────────────┘
+                              ▼
+                       typed result · session file · audit log
+```
 
-You *want* variability here — it's how the model surfaces options a rigid rule set never could.
-
-### Deterministic work — where code, not models, belongs
-
-Quality, safety, and compliance are not judgment calls. They are invariants. They must behave the **same way every time**, on every machine, for every input:
-
-- Type checking, linting, and formatting
-- Unit, integration, and end-to-end test suites
-- Schema validation, contract checks, and boundary enforcement
-- Build pipelines, migrations, and release gates
-
-A probabilistic process cannot guarantee any of these. Deterministic scripts can, and should.
-
-### What galloper is trying to be
-
-galloper is a thin, opinionated layer designed to **glue any capable LLM CLI — Claude Code, Codex, Gemini CLI, and others — to a deterministic orchestration shell**. The LLM handles the probabilistic reasoning; galloper provides the edges, boundaries, and verification around it:
-
-- Structured inputs, typed outputs, and persisted session records
-- Lifecycle hooks (pre/post plan, pre/post task, pre/post file) for validation, linting, and gating
-- An event stream for audit, monitoring, and integration with external systems
-- Explicit subcommand routing (`plan`, `implement`) so the probabilistic step is bounded by a deterministic contract
-
-In short: **let the model reason, let the harness verify.**
+galloper is the deterministic shell: a thin, opinionated layer that wraps any capable LLM CLI (Claude Code, Codex, Gemini CLI, …) with edges, hooks, events, and typed outputs.
 
 ### Tiered model orchestration
 
-A second goal is cost- and latency-aware model tiering. Not every step needs a frontier model:
+A second goal: not every step needs a frontier model.
 
-- **Planning** — high-capability models (e.g. Claude Opus 4.7, GPT-5.4) decompose the problem and design the approach
-- **Execution & verification** — smaller, faster, cheaper models (e.g. Claude Haiku, GPT-5 mini, Gemini Flash) carry out individual tasks and run validations
-- **Automatic escalation** — when a lighter model detects it is out of its depth, the orchestrator can route specific tasks up to a more capable model, then return to the cheaper tier
+```
+  hard problem ──►  [ Opus 4.7 / GPT-5.4 ]  plan
+                              │
+                              ▼  one task each
+                    [ Haiku / mini / Flash ]  execute · verify
+                              │
+                  too hard?   │   ──►  escalate up one tier
+                  too easy?   │   ──►  stay cheap
+                              ▼
+                           done
+```
 
-The result is a pipeline that spends frontier-model capacity where it actually matters and uses economical models for the bulk of the work — all governed by deterministic rules rather than model whim.
+Frontier models plan; cheap models execute and validate; deterministic rules — not model whim — decide when to escalate.
 
 ## Documentation
 
