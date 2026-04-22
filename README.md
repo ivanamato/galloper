@@ -1,6 +1,6 @@
 # galloper
 
-A minimal Node.js runner for executing LLM CLI (Codex, Claude Code, Gemini CLI) commands programmatically. Use it to orchestrate multiple Claude Code runs, batch process prompts, integrate with external systems, or test Claude Code automation.
+galloper is a **deterministic orchestration shell for LLM coding agents**. It wraps any capable LLM CLI — Claude Code, Codex, Gemini CLI, others — in a typed, observable harness of hooks, events, and validation gates, so the probabilistic work of the model runs inside deterministic edges you control. It also tiers models across a single pipeline: frontier models plan, cheaper models execute and verify, with rule-driven escalation when a task outgrows its tier.
 
 > ## Status: Alpha — Research & Study Use Only
 >
@@ -38,6 +38,9 @@ Most LLM-driven automation breaks down because it treats two different kinds of 
 ```
 
 galloper is the deterministic shell: a thin, opinionated layer that wraps any capable LLM CLI (Claude Code, Codex, Gemini CLI, …) with edges, hooks, events, and typed outputs.
+
+> **Today:** plan → execute (linear, write-once).
+> **Aspiration:** plan → execute one step → reevaluate → continue or revise → … — a plan that stays alive throughout the run. See [ROADMAP §3](ROADMAP.md#3-adaptive-plan--execute--reevaluate-loop).
 
 ### Tiered model orchestration
 
