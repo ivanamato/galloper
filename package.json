@@ -2,6 +2,8 @@
   "name": "galloper",
   "private": true,
   "version": "0.2.0",
+  "license": "MIT",
+  "author": "Ivan Amato",
   "type": "module",
   "bin": {
     "galloper": "dist/run-llm-session.js"

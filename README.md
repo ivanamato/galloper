@@ -228,3 +228,7 @@ rm -rf galloper-data/
 ```
 
 The `.gitignore` excludes `galloper-data/` from version control.
+
+## License
+
+Released under the [MIT License](LICENSE). © 2026 Ivan Amato.
