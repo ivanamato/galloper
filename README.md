@@ -1,6 +1,6 @@
 # galloper
 
-A minimal Node.js runner for executing Claude Code (Codex) commands programmatically. Use it to orchestrate multiple Claude Code runs, batch process prompts, integrate with external systems, or test Claude Code automation.
+A minimal Node.js runner for executing LLM CLI (Codex, Claude Code, Gemini CLI) commands programmatically. Use it to orchestrate multiple Claude Code runs, batch process prompts, integrate with external systems, or test Claude Code automation.
 
 > ## Status: Alpha — Research & Study Use Only
 >
