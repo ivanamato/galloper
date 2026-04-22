@@ -1,0 +1,71 @@
+{
+  "default": "mock-success",
+  "defaultPlanner": "mock-json",
+  "defaultExecutioner": "mock-implement",
+  "commands": {
+    "mock-success": {
+      "command": "bash tests/fixtures/mock-commands/echo-success.sh",
+      "allowedSubcommands": [],
+      "disallowedSubcommands": []
+    },
+    "mock-json": {
+      "command": "bash tests/fixtures/mock-commands/echo-json.sh",
+      "allowedSubcommands": ["plan"],
+      "disallowedSubcommands": []
+    },
+    "mock-implement": {
+      "command": "bash tests/fixtures/mock-commands/echo-success.sh",
+      "allowedSubcommands": ["implement"],
+      "disallowedSubcommands": []
+    }
+  },
+  "hooks": {
+    "lifecycle": {
+      "pre-plan": [
+        {
+          "instructions": "Check for required configuration files"
+        }
+      ],
+      "post-plan": [
+        {
+          "match": "*.ts",
+          "command": "echo 'Plan validation complete'"
+        }
+      ],
+      "pre-task": [
+        {
+          "instructions": "Initialize task environment"
+        }
+      ],
+      "post-task": [
+        {
+          "command": "echo 'Task complete'",
+          "onFailure": "warn"
+        }
+      ],
+      "pre-task-file": [
+        {
+          "match": "src/**/*.ts",
+          "action": "create",
+          "instructions": "Validate TypeScript file creation"
+        }
+      ],
+      "post-task-file": [
+        {
+          "match": "src/**/*.ts",
+          "action": "edit",
+          "command": "echo 'File verified'",
+          "onFailure": "retry"
+        }
+      ]
+    },
+    "events": {
+      "task.completed": [
+        {
+          "command": "echo 'Task event fired'",
+          "timeoutMs": 5000
+        }
+      ]
+    }
+  }
+}

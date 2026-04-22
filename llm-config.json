@@ -1,0 +1,104 @@
+{
+  "default": "claude-haiku",
+  "defaultPlanner": "claude-opus-high-effort",
+  "defaultExecutioner": "claude-haiku",
+  "commands": {
+    "codex": {
+      "command": "codex exec --json --skip-git-repo-check -",
+      "allowedSubcommands": ["single-prompt", "plan", "pipeline"],
+      "disallowedSubcommands": []
+    },
+    "claude-haiku": {
+      "command": "claude -p --model claude-haiku-4-5-20251001 --allowedTools * --dangerously-skip-permissions",
+      "allowedSubcommands": ["single-prompt", "plan", "implement", "pipeline"],
+      "disallowedSubcommands": [],
+      "env": {}
+    },
+    "claude-opus-high-effort": {
+      "command": "claude -p --model claude-opus-4-7 --effort high --allowedTools * --dangerously-skip-permissions",
+      "allowedSubcommands": ["single-prompt", "plan", "implement", "pipeline"],
+      "disallowedSubcommands": []
+    },
+    "zai": {
+      "command": "claude -p --allowedTools * --dangerously-skip-permissions",
+      "allowedSubcommands": ["single-prompt", "plan", "implement", "pipeline"],
+      "disallowedSubcommands": [],
+      "env": {
+        "CLAUDE_CODE_NO_FLICKER": "1",
+        "ENABLE_LSP_TOOLS": "1",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.1",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-4.7",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.5-air",
+        "ANTHROPIC_AUTH_TOKEN": "3b5f3157d71446c2907fa4a3ab300d54.3i1l7S0Phy8FfPhj",
+        "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+        "API_TIMEOUT_MS": "3000000"
+      }
+    },
+    "zaiturbo": {
+      "command": "claude -p --allowedTools * --dangerously-skip-permissions",
+      "allowedSubcommands": ["single-prompt", "plan", "implement", "pipeline"],
+      "disallowedSubcommands": [],
+      "env": {
+        "ENABLE_LSP_TOOLS": "1",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-4.5-air",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-4.5-air",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.5-air",
+        "ANTHROPIC_AUTH_TOKEN": "3b5f3157d71446c2907fa4a3ab300d54.3i1l7S0Phy8FfPhj",
+        "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+        "API_TIMEOUT_MS": "3000000"
+      }
+    }
+  },
+  "hooks": {
+    "lifecycle": {
+      "pre-plan": [
+        {
+          "command": "echo \"[pre-plan] $(date -u +%Y-%m-%dT%H:%M:%SZ) starting plan\" >> devflowv3-data/hooks.log",
+          "timeoutMs": 5000,
+          "onFailure": "warn"
+        }
+      ],
+      "post-plan": [
+        {
+          "command": "echo \"[post-plan] $(date -u +%Y-%m-%dT%H:%M:%SZ) plan generated\" >> devflowv3-data/hooks.log",
+          "timeoutMs": 5000,
+          "onFailure": "warn"
+        }
+      ],
+      "pre-task": [
+        {
+          "command": "echo \"[pre-task] $(date -u +%Y-%m-%dT%H:%M:%SZ) task starting\" >> devflowv3-data/hooks.log",
+          "timeoutMs": 5000,
+          "onFailure": "warn"
+        }
+      ],
+      "post-task": [
+        {
+          "command": "echo \"[post-task] $(date -u +%Y-%m-%dT%H:%M:%SZ) task finished\" >> devflowv3-data/hooks.log",
+          "timeoutMs": 5000,
+          "onFailure": "warn"
+        }
+      ]
+    },
+    "events": {
+      "run.started": [
+        {
+          "command": "echo \"[event:run.started] $(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> devflowv3-data/hooks.log",
+          "timeoutMs": 3000
+        }
+      ],
+      "run.completed": [
+        {
+          "command": "echo \"[event:run.completed] $(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> devflowv3-data/hooks.log",
+          "timeoutMs": 3000
+        }
+      ],
+      "task.completed": [
+        {
+          "command": "echo \"[event:task.completed] $(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> devflowv3-data/hooks.log",
+          "timeoutMs": 3000
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "default": "mock-success",
+  "defaultPlanner": "mock-json-plan",
+  "defaultExecutioner": "mock-implement",
+  "commands": {
+    "mock-success": {
+      "command": "bash tests/fixtures/mock-commands/echo-success.sh",
+      "allowedSubcommands": [],
+      "disallowedSubcommands": []
+    },
+    "mock-plan": {
+      "command": "bash tests/fixtures/mock-commands/echo-plan.sh",
+      "allowedSubcommands": ["plan"],
+      "disallowedSubcommands": []
+    },
+    "mock-json-plan": {
+      "command": "bash tests/fixtures/mock-commands/echo-json-plan.sh",
+      "allowedSubcommands": ["plan"],
+      "disallowedSubcommands": []
+    },
+    "mock-json": {
+      "command": "bash tests/fixtures/mock-commands/echo-json.sh",
+      "allowedSubcommands": ["plan"],
+      "disallowedSubcommands": []
+    },
+    "mock-fail": {
+      "command": "bash tests/fixtures/mock-commands/fail-exit.sh",
+      "allowedSubcommands": [],
+      "disallowedSubcommands": ["implement"]
+    },
+    "mock-malformed": {
+      "command": "bash tests/fixtures/mock-commands/malformed-json.sh",
+      "allowedSubcommands": [],
+      "disallowedSubcommands": []
+    },
+    "mock-implement": {
+      "command": "bash tests/fixtures/mock-commands/echo-success.sh",
+      "allowedSubcommands": ["implement"],
+      "disallowedSubcommands": []
+    },
+    "mock-impl-fail": {
+      "command": "bash tests/fixtures/mock-commands/impl-fail.sh",
+      "allowedSubcommands": ["implement"],
+      "disallowedSubcommands": []
+    }
+  }
+}

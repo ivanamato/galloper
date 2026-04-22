@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+package-lock.json
+npm-debug.log
+
+# Build output
+dist/
+
+# Runtime artifacts (created by tests and execution)
+devflowv3-data/
+coverage/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+devflow
+.devflow.yaml
+devflow.log
+.mcp.json
+.claude

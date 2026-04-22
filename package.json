@@ -1,0 +1,33 @@
+{
+  "name": "devflowv3",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "bin": {
+    "devflowv3": "dist/run-llm-session.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prerun": "npm run build",
+    "run": "node dist/run-llm-session.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:all": "npm run build && vitest run"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "picomatch": "^2.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/picomatch": "^4.0.3",
+    "@vitest/coverage-v8": "^1.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  }
+}

@@ -1,0 +1,1 @@
+{"default":"mock-success","commands":{"mock-success":{"command":"echo","allowedSubcommands":[],"disallowedSubcommands":[]}},"hooks":{"lifecycle":{"pre-task-file":[{"match":"[invalid(glob","instructions":"Test"}]}}}
