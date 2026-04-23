@@ -347,6 +347,30 @@ The default implementation is `git diff` against a baseline captured at `pre-tas
 
 ---
 
+## 12. User-Editable Plan / Implement Prompt Templates
+
+**Intent.** The prompts that drive `plan` and `implement` are currently hard-coded in `src/lib/PromptTemplates.ts` and loaded as constants by `Planner` and `Executioner` (e.g. `Executioner.loadPromptTemplate` returns `IMPLEMENT_PROMPT` verbatim). That makes the most consequential strings in galloper — the ones that actually shape what the LLM does in each phase — unreachable from a project's config. A user who wants to enforce a house style, add a project-specific preamble, or swap in a different planning rubric has to fork the codebase. The implementation/execution loop should be **editable per project**, just like `commands` and `hooks` already are.
+
+**Why this matters.** Hooks and command entries already let users shape the *deterministic edges* around each phase. The prompt template is the *probabilistic core* of that same phase. Leaving it un-overridable means the most important behavioral surface is the least configurable one — and the only escape valve today is "wrap your whole prompt in your own preamble before calling galloper," which defeats the point of having a planner/executor abstraction.
+
+**Design constraints.**
+- Templates must be **resolved with a clear precedence**, mirroring how command resolution already works: explicit per-command override → project-level override in `galloper.json` → built-in default. The built-in must remain a working fallback so a fresh `galloper init` still does something useful.
+- Overrides must be **inspectable and versionable**. Inline strings in `galloper.json` work for short cases; a `templates/` directory referenced by path is the right answer for non-trivial prompts so they live in their own files and diff cleanly.
+- The template variable surface (`{{CWD}}` today, more later) must be **explicit and documented** — not "whatever happens to be in scope at render time." Adding a new variable should be a deliberate change to a documented contract.
+- Validation must catch broken overrides at config load (`galloper doctor`), not at run time. Missing template files, unknown variables, empty overrides — all should fail loudly before a subprocess spawns.
+- Per-command overrides (a specific `claude-haiku` entry shipping its own `implement` prompt) must compose with the existing `allowedSubcommands` / `disallowedSubcommands` machinery without surprises.
+
+**Open questions.**
+- What is the right shape in `galloper.json` — a top-level `prompts: { plan, implement }` block, a per-command `prompts` field, or both with a documented precedence?
+- Inline strings vs. file paths vs. both? Files are better for anything non-trivial but introduce a new "where do template files live" decision (project-relative? `galloper-data/templates/`? a configurable dir?).
+- What template variables are part of the **stable contract**? `{{CWD}}` is in today; obvious candidates are `{{PROMPT}}`, `{{PLAN_FILE}}`, `{{TASK_INDEX}}`, plus discovered context once §5 lands. Locking the surface early prevents users' templates from breaking on upgrade.
+- Should overrides be **additive** (preamble / postamble slots that wrap the built-in) or **replacing** (full template takeover)? Additive is safer for users who only want to nudge behavior; replacing is necessary for users who want full control. Probably both, with the additive form as the recommended default.
+- How does this interact with adaptive replanning (§3)? The reevaluation step is its own prompt — does it inherit the same override mechanism, or does it get its own slot?
+- How does this interact with the LLM-assisted hook generation (§10)? A generated config could ship project-tailored prompt overrides alongside the hook suite — but only if the override surface exists first.
+- What does `galloper doctor` need to check on a custom template — presence, non-emptiness, mention of required variables, or actually round-tripping a render with sample inputs?
+
+---
+
 ## Feedback
 
 These are all open design threads. If you have experience with any of them — especially in production orchestration systems, multi-model pipelines, or MCP integrations — please open an issue or discussion. The goal of this document is to make the unknowns explicit, not to pretend they're solved.
