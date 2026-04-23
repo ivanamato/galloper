@@ -13,6 +13,18 @@ export interface CommandEntry {
   [key: string]: unknown;
 }
 
+export interface WorkspaceRoot {
+  path: string;
+  vcs: 'git' | 'none';
+  label: string;
+  ignore?: string[];
+}
+
+export interface WorkspaceConfig {
+  roots: WorkspaceRoot[];
+  ignore?: string[];
+}
+
 export interface LlmConfig {
   default: string;
   defaultPlanner?: string;
@@ -20,6 +32,7 @@ export interface LlmConfig {
   commands: Record<string, CommandEntry>;
   hooks?: HooksConfig;
   executionerEscalation?: string[];
+  workspace?: WorkspaceConfig;
 }
 
 function isSubcommandAllowedForEntry(entry: CommandEntry, subcommand: string): boolean {
@@ -109,6 +122,77 @@ export function validateLlmConfig(config: LlmConfig): void {
 
   if (config.hooks) {
     validateHooksConfigPure(config.hooks);
+  }
+
+  if (config.workspace) {
+    const workspace = config.workspace as unknown as Record<string, unknown>;
+
+    if (typeof workspace !== 'object' || workspace === null || Array.isArray(workspace)) {
+      throw new Error('workspace must be an object');
+    }
+
+    const roots = workspace.roots;
+    if (!Array.isArray(roots)) {
+      throw new Error('workspace.roots must be an array');
+    }
+
+    const seenLabels = new Set<string>();
+
+    for (let i = 0; i < roots.length; i++) {
+      const root = roots[i];
+
+      if (typeof root !== 'object' || root === null || Array.isArray(root)) {
+        throw new Error(`workspace.roots[${i}]: must be an object`);
+      }
+
+      const rootObj = root as Record<string, unknown>;
+
+      // Validate path
+      if (typeof rootObj.path !== 'string' || (rootObj.path as string).trim() === '') {
+        throw new Error(`workspace.roots[${i}].path: must be a non-empty string`);
+      }
+
+      // Validate label
+      if (typeof rootObj.label !== 'string' || (rootObj.label as string).trim() === '') {
+        throw new Error(`workspace.roots[${i}].label: must be a non-empty string`);
+      }
+
+      const label = rootObj.label as string;
+      if (seenLabels.has(label)) {
+        throw new Error(`workspace.roots[${i}].label: label "${label}" is not unique`);
+      }
+      seenLabels.add(label);
+
+      // Validate vcs
+      const vcs = rootObj.vcs;
+      if (typeof vcs !== 'string' || (vcs !== 'git' && vcs !== 'none')) {
+        throw new Error(`workspace.roots[${i}].vcs: must be either 'git' or 'none'`);
+      }
+
+      // Validate ignore (optional)
+      if (rootObj.ignore !== undefined) {
+        if (!Array.isArray(rootObj.ignore)) {
+          throw new Error(`workspace.roots[${i}].ignore: must be a string array when present`);
+        }
+        for (let j = 0; j < (rootObj.ignore as unknown[]).length; j++) {
+          if (typeof (rootObj.ignore as unknown[])[j] !== 'string') {
+            throw new Error(`workspace.roots[${i}].ignore[${j}]: must be a string`);
+          }
+        }
+      }
+    }
+
+    // Validate workspace.ignore (top-level, optional)
+    if (workspace.ignore !== undefined) {
+      if (!Array.isArray(workspace.ignore)) {
+        throw new Error('workspace.ignore: must be a string array when present');
+      }
+      for (let i = 0; i < (workspace.ignore as unknown[]).length; i++) {
+        if (typeof (workspace.ignore as unknown[])[i] !== 'string') {
+          throw new Error(`workspace.ignore[${i}]: must be a string`);
+        }
+      }
+    }
   }
 }
 

@@ -894,4 +894,177 @@ it('throws on unknown event name with suggestion', async () => {
     } as any;
     expect(() => validateLlmConfig(cfg)).toThrow(/onAbort must be 'revert' or 'keep'/);
   });
+
+  describe('workspace config validation', () => {
+    it('accepts a valid workspace with single root', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '.', vcs: 'git', label: 'main' },
+        ],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).not.toThrow();
+    });
+
+    it('accepts a valid workspace with multiple unique roots', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '.', vcs: 'git', label: 'main' },
+          { path: './subdir', vcs: 'none', label: 'secondary' },
+        ],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).not.toThrow();
+    });
+
+    it('rejects workspace with duplicate labels', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '.', vcs: 'git', label: 'main' },
+          { path: './other', vcs: 'none', label: 'main' },
+        ],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/label "main" is not unique/);
+    });
+
+    it('rejects root with unknown vcs value', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '.', vcs: 'svn', label: 'main' } as any,
+        ],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/vcs: must be either 'git' or 'none'/);
+    });
+
+    it('rejects root with empty path', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '', vcs: 'git', label: 'main' } as any,
+        ],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/path: must be a non-empty string/);
+    });
+
+    it('rejects root with whitespace-only path', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '   ', vcs: 'git', label: 'main' } as any,
+        ],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/path: must be a non-empty string/);
+    });
+
+    it('rejects root with missing path', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { vcs: 'git', label: 'main' } as any,
+        ],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/path: must be a non-empty string/);
+    });
+
+    it('rejects root with empty label', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '.', vcs: 'git', label: '' } as any,
+        ],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/label: must be a non-empty string/);
+    });
+
+    it('rejects root ignore with non-string entry', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '.', vcs: 'git', label: 'main', ignore: ['*.md', 42] } as any,
+        ],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/ignore\[1\]: must be a string/);
+    });
+
+    it('rejects workspace-level ignore with non-string entry', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '.', vcs: 'git', label: 'main' },
+        ],
+        ignore: ['*.log', true] as any,
+      } as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/workspace\.ignore\[1\]: must be a string/);
+    });
+
+    it('accepts workspace omitted entirely (backwards compat)', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      // workspace is not defined
+      expect(() => validateLlmConfig(cfg)).not.toThrow();
+    });
+
+    it('accepts root with valid ignore array', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '.', vcs: 'git', label: 'main', ignore: ['*.log', '*.tmp'] },
+        ],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).not.toThrow();
+    });
+
+    it('accepts workspace-level ignore array', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {
+        roots: [
+          { path: '.', vcs: 'git', label: 'main' },
+        ],
+        ignore: ['node_modules', '.git'],
+      } as any;
+      expect(() => validateLlmConfig(cfg)).not.toThrow();
+    });
+
+    it('rejects non-object workspace', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = 'not-an-object' as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/workspace must be an object/);
+    });
+
+    it('rejects workspace without roots array', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = {} as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/workspace\.roots must be an array/);
+    });
+
+    it('rejects workspace.roots that is not an array', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = { roots: 'not-an-array' } as any;
+      expect(() => validateLlmConfig(cfg)).toThrow(/workspace\.roots must be an array/);
+    });
+
+    it('rejects empty roots array', async () => {
+      const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+      const cfg = BASE();
+      cfg.workspace = { roots: [] } as any;
+      expect(() => validateLlmConfig(cfg)).not.toThrow();
+    });
+  });
 });
