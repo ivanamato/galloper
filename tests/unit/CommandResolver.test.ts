@@ -90,3 +90,50 @@ describe('CommandResolver', () => {
     expect(entry.command).toBeTruthy();
   });
 });
+
+describe('CommandResolver adaptive roles', () => {
+  describe('with adaptive config', () => {
+    let adaptiveConfigPath: string;
+    let adaptiveConfigManager: ConfigManager;
+    let adaptiveResolver: CommandResolver;
+
+    beforeEach(async () => {
+      adaptiveConfigPath = join(process.cwd(), 'tests/fixtures/adaptive-config.test.json');
+      adaptiveConfigManager = new ConfigManager({ configPath: adaptiveConfigPath });
+      await adaptiveConfigManager.load();
+      adaptiveResolver = new CommandResolver({ configManager: adaptiveConfigManager });
+    });
+
+    it('should resolveEvaluator return adaptive.defaultEvaluator', () => {
+      const result = adaptiveResolver.resolveEvaluator();
+      expect(result).toBe('cmd-b');
+    });
+
+    it('should resolveReplanner return adaptive.defaultReplanner', () => {
+      const result = adaptiveResolver.resolveReplanner();
+      expect(result).toBe('cmd-c');
+    });
+  });
+
+  describe('fallback behavior without adaptive config', () => {
+    it('should resolveEvaluator fall back to defaultPlanner when adaptive.defaultEvaluator not set', async () => {
+      const standardConfigPath = join(process.cwd(), 'tests/fixtures/galloper.test.json');
+      const standardConfigManager = new ConfigManager({ configPath: standardConfigPath });
+      await standardConfigManager.load();
+      const standardResolver = new CommandResolver({ configManager: standardConfigManager });
+
+      const result = standardResolver.resolveEvaluator();
+      expect(result).toBe('mock-json');
+    });
+
+    it('should resolveReplanner fall back to defaultPlanner when adaptive.defaultReplanner not set', async () => {
+      const standardConfigPath = join(process.cwd(), 'tests/fixtures/galloper.test.json');
+      const standardConfigManager = new ConfigManager({ configPath: standardConfigPath });
+      await standardConfigManager.load();
+      const standardResolver = new CommandResolver({ configManager: standardConfigManager });
+
+      const result = standardResolver.resolveReplanner();
+      expect(result).toBe('mock-json');
+    });
+  });
+});

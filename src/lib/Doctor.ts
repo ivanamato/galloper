@@ -169,6 +169,30 @@ export async function runDoctor(config: LlmConfig, deps: DoctorDeps): Promise<Do
     });
   }
 
+  // Check adaptive.defaultEvaluator command exists (if set)
+  if (config.adaptive?.defaultEvaluator && !(config.adaptive.defaultEvaluator in config.commands)) {
+    const candidates = Object.keys(config.commands);
+    const suggestion = nearest(config.adaptive.defaultEvaluator, candidates)[0];
+    const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+    errors.push({
+      code: 'UNKNOWN_ADAPTIVE_EVALUATOR',
+      message: `adaptive.defaultEvaluator command '${config.adaptive.defaultEvaluator}' does not exist in commands${suggestionText}`,
+      path: 'adaptive.defaultEvaluator',
+    });
+  }
+
+  // Check adaptive.defaultReplanner command exists (if set)
+  if (config.adaptive?.defaultReplanner && !(config.adaptive.defaultReplanner in config.commands)) {
+    const candidates = Object.keys(config.commands);
+    const suggestion = nearest(config.adaptive.defaultReplanner, candidates)[0];
+    const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+    errors.push({
+      code: 'UNKNOWN_ADAPTIVE_REPLANNER',
+      message: `adaptive.defaultReplanner command '${config.adaptive.defaultReplanner}' does not exist in commands${suggestionText}`,
+      path: 'adaptive.defaultReplanner',
+    });
+  }
+
   // Check each command entry's first token exists on PATH
   for (const [name, entry] of Object.entries(config.commands)) {
     const token = extractFirstToken(entry.command);

@@ -56,4 +56,22 @@ export class CommandResolver {
 
     return commandName;
   }
+
+  resolveEvaluator(): string {
+    const commandName = this.configManager.getDefaultEvaluator();
+    const entry = this.configManager.getCommand(commandName);
+    if (!entry) {
+      throw new Error(`Resolved evaluator command "${commandName}" not found in config`);
+    }
+    return commandName;
+  }
+
+  resolveReplanner(): string {
+    const commandName = this.configManager.getDefaultReplanner();
+    const entry = this.configManager.getCommand(commandName);
+    if (!entry) {
+      throw new Error(`Resolved replanner command "${commandName}" not found in config`);
+    }
+    return commandName;
+  }
 }

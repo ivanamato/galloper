@@ -1068,3 +1068,183 @@ it('throws on unknown event name with suggestion', async () => {
     });
   });
 });
+
+describe('ConfigManager adaptive section', () => {
+  it('loads adaptive config block with all fields', async () => {
+    const configPath = join(process.cwd(), 'tests/fixtures/adaptive-config.test.json');
+    const cm = new ConfigManager({ configPath });
+    await cm.load();
+
+    const adaptive = cm.getAdaptiveConfig();
+    expect(adaptive).toBeDefined();
+    expect(adaptive?.confidenceThreshold).toBe(0.8);
+    expect(adaptive?.maxReplans).toBe(3);
+    expect(adaptive?.diffMaxBytes).toBe(16384);
+    expect(adaptive?.defaultEvaluator).toBe('cmd-b');
+    expect(adaptive?.defaultReplanner).toBe('cmd-c');
+  });
+
+  it('getDefaultEvaluator returns adaptive.defaultEvaluator when set', async () => {
+    const configPath = join(process.cwd(), 'tests/fixtures/adaptive-config.test.json');
+    const cm = new ConfigManager({ configPath });
+    await cm.load();
+
+    expect(cm.getDefaultEvaluator()).toBe('cmd-b');
+  });
+
+  it('getDefaultReplanner returns adaptive.defaultReplanner when set', async () => {
+    const configPath = join(process.cwd(), 'tests/fixtures/adaptive-config.test.json');
+    const cm = new ConfigManager({ configPath });
+    await cm.load();
+
+    expect(cm.getDefaultReplanner()).toBe('cmd-c');
+  });
+
+  it('getDefaultEvaluator falls back to defaultPlanner when adaptive unset', async () => {
+    const configPath = join(process.cwd(), 'tests/fixtures/galloper.test.json');
+    const cm = new ConfigManager({ configPath });
+    await cm.load();
+
+    expect(cm.getDefaultEvaluator()).toBe('mock-json');
+  });
+
+  it('getDefaultReplanner falls back to defaultPlanner when adaptive unset', async () => {
+    const configPath = join(process.cwd(), 'tests/fixtures/galloper.test.json');
+    const cm = new ConfigManager({ configPath });
+    await cm.load();
+
+    expect(cm.getDefaultReplanner()).toBe('mock-json');
+  });
+
+  it('throws when adaptive.confidenceThreshold is out of [0, 1] range', async () => {
+    const badConfigPath = join(process.cwd(), 'tests/fixtures/bad-adaptive-confidence.json');
+    const cm = new ConfigManager({ configPath: badConfigPath });
+
+    const { writeFileSync, mkdirSync, rmSync } = await import('node:fs');
+    mkdirSync(join(process.cwd(), 'tests/fixtures'), { recursive: true });
+    writeFileSync(
+      badConfigPath,
+      JSON.stringify({
+        default: 'cmd-a',
+        commands: { 'cmd-a': { command: 'echo', allowedSubcommands: [], disallowedSubcommands: [] } },
+        adaptive: { confidenceThreshold: 1.5 },
+      })
+    );
+
+    try {
+      await cm.load();
+      expect.fail('Should throw for out-of-range confidenceThreshold');
+    } catch (error) {
+      const msg = (error as Error).message;
+      expect(msg).toContain('adaptive.confidenceThreshold');
+    } finally {
+      rmSync(badConfigPath);
+    }
+  });
+
+  it('throws when adaptive.maxReplans is negative', async () => {
+    const badConfigPath = join(process.cwd(), 'tests/fixtures/bad-adaptive-maxreplans.json');
+    const cm = new ConfigManager({ configPath: badConfigPath });
+
+    const { writeFileSync, mkdirSync, rmSync } = await import('node:fs');
+    mkdirSync(join(process.cwd(), 'tests/fixtures'), { recursive: true });
+    writeFileSync(
+      badConfigPath,
+      JSON.stringify({
+        default: 'cmd-a',
+        commands: { 'cmd-a': { command: 'echo', allowedSubcommands: [], disallowedSubcommands: [] } },
+        adaptive: { maxReplans: -1 },
+      })
+    );
+
+    try {
+      await cm.load();
+      expect.fail('Should throw for negative maxReplans');
+    } catch (error) {
+      const msg = (error as Error).message;
+      expect(msg).toContain('adaptive.maxReplans');
+    } finally {
+      rmSync(badConfigPath);
+    }
+  });
+
+  it('throws when adaptive.diffMaxBytes is zero', async () => {
+    const badConfigPath = join(process.cwd(), 'tests/fixtures/bad-adaptive-diffmaxbytes.json');
+    const cm = new ConfigManager({ configPath: badConfigPath });
+
+    const { writeFileSync, mkdirSync, rmSync } = await import('node:fs');
+    mkdirSync(join(process.cwd(), 'tests/fixtures'), { recursive: true });
+    writeFileSync(
+      badConfigPath,
+      JSON.stringify({
+        default: 'cmd-a',
+        commands: { 'cmd-a': { command: 'echo', allowedSubcommands: [], disallowedSubcommands: [] } },
+        adaptive: { diffMaxBytes: 0 },
+      })
+    );
+
+    try {
+      await cm.load();
+      expect.fail('Should throw for zero diffMaxBytes');
+    } catch (error) {
+      const msg = (error as Error).message;
+      expect(msg).toContain('adaptive.diffMaxBytes');
+    } finally {
+      rmSync(badConfigPath);
+    }
+  });
+
+  it('throws when adaptive.defaultEvaluator references a non-existent command', async () => {
+    const badConfigPath = join(process.cwd(), 'tests/fixtures/bad-adaptive-evaluator.json');
+    const cm = new ConfigManager({ configPath: badConfigPath });
+
+    const { writeFileSync, mkdirSync, rmSync } = await import('node:fs');
+    mkdirSync(join(process.cwd(), 'tests/fixtures'), { recursive: true });
+    writeFileSync(
+      badConfigPath,
+      JSON.stringify({
+        default: 'cmd-a',
+        commands: { 'cmd-a': { command: 'echo', allowedSubcommands: [], disallowedSubcommands: [] } },
+        adaptive: { defaultEvaluator: 'does-not-exist' },
+      })
+    );
+
+    try {
+      await cm.load();
+      expect.fail('Should throw for non-existent defaultEvaluator');
+    } catch (error) {
+      const msg = (error as Error).message;
+      expect(msg).toContain('adaptive.defaultEvaluator');
+      expect(msg).toContain('does not exist');
+    } finally {
+      rmSync(badConfigPath);
+    }
+  });
+
+  it('throws when adaptive.defaultReplanner references a non-existent command', async () => {
+    const badConfigPath = join(process.cwd(), 'tests/fixtures/bad-adaptive-replanner.json');
+    const cm = new ConfigManager({ configPath: badConfigPath });
+
+    const { writeFileSync, mkdirSync, rmSync } = await import('node:fs');
+    mkdirSync(join(process.cwd(), 'tests/fixtures'), { recursive: true });
+    writeFileSync(
+      badConfigPath,
+      JSON.stringify({
+        default: 'cmd-a',
+        commands: { 'cmd-a': { command: 'echo', allowedSubcommands: [], disallowedSubcommands: [] } },
+        adaptive: { defaultReplanner: 'does-not-exist' },
+      })
+    );
+
+    try {
+      await cm.load();
+      expect.fail('Should throw for non-existent defaultReplanner');
+    } catch (error) {
+      const msg = (error as Error).message;
+      expect(msg).toContain('adaptive.defaultReplanner');
+      expect(msg).toContain('does not exist');
+    } finally {
+      rmSync(badConfigPath);
+    }
+  });
+});

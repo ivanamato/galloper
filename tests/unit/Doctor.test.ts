@@ -553,3 +553,93 @@ describe('workspace glob validation', () => {
     expect(warnings).toHaveLength(0);
   });
 });
+
+describe('Doctor adaptive reference checks', () => {
+  it('should error when adaptive.defaultEvaluator references non-existent command', async () => {
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      adaptive: {
+        defaultEvaluator: 'missing-eval',
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude']);
+    const report = await runDoctor(config, deps);
+
+    const errors = filterErrors(report.errors, 'UNKNOWN_ADAPTIVE_EVALUATOR');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].path).toBe('adaptive.defaultEvaluator');
+  });
+
+  it('should error when adaptive.defaultReplanner references non-existent command', async () => {
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      adaptive: {
+        defaultReplanner: 'missing-repl',
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude']);
+    const report = await runDoctor(config, deps);
+
+    const errors = filterErrors(report.errors, 'UNKNOWN_ADAPTIVE_REPLANNER');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].path).toBe('adaptive.defaultReplanner');
+  });
+
+  it('should return no adaptive errors when adaptive section absent', async () => {
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude']);
+    const report = await runDoctor(config, deps);
+
+    expect(filterErrors(report.errors, 'UNKNOWN_ADAPTIVE_EVALUATOR')).toHaveLength(0);
+    expect(filterErrors(report.errors, 'UNKNOWN_ADAPTIVE_REPLANNER')).toHaveLength(0);
+  });
+
+  it('should return no adaptive errors when refs valid', async () => {
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      adaptive: {
+        defaultEvaluator: 'claude-haiku',
+        defaultReplanner: 'claude-haiku',
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude']);
+    const report = await runDoctor(config, deps);
+
+    expect(filterErrors(report.errors, 'UNKNOWN_ADAPTIVE_EVALUATOR')).toHaveLength(0);
+    expect(filterErrors(report.errors, 'UNKNOWN_ADAPTIVE_REPLANNER')).toHaveLength(0);
+  });
+});

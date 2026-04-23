@@ -27,6 +27,14 @@ export interface WorkspaceConfig {
   quiesceTimeoutMs?: number;
 }
 
+export interface AdaptiveConfig {
+  confidenceThreshold?: number;
+  maxReplans?: number;
+  diffMaxBytes?: number;
+  defaultEvaluator?: string;
+  defaultReplanner?: string;
+}
+
 export interface LlmConfig {
   default: string;
   defaultPlanner?: string;
@@ -35,6 +43,7 @@ export interface LlmConfig {
   hooks?: HooksConfig;
   executionerEscalation?: string[];
   workspace?: WorkspaceConfig;
+  adaptive?: AdaptiveConfig;
 }
 
 function isSubcommandAllowedForEntry(entry: CommandEntry, subcommand: string): boolean {
@@ -209,6 +218,61 @@ export function validateLlmConfig(config: LlmConfig): void {
       const quiesceTimeoutMs = workspace.quiesceTimeoutMs as unknown;
       if (typeof quiesceTimeoutMs !== 'number' || !Number.isInteger(quiesceTimeoutMs) || quiesceTimeoutMs < 0) {
         throw new Error('workspace.quiesceTimeoutMs: must be a non-negative integer when present');
+      }
+    }
+  }
+
+  if (config.adaptive) {
+    const adaptive = config.adaptive as unknown as Record<string, unknown>;
+
+    if (typeof adaptive !== 'object' || adaptive === null || Array.isArray(adaptive)) {
+      throw new Error('adaptive must be an object');
+    }
+
+    if (adaptive.confidenceThreshold !== undefined) {
+      const confidenceThreshold = adaptive.confidenceThreshold as unknown;
+      if (typeof confidenceThreshold !== 'number' || !Number.isFinite(confidenceThreshold) || confidenceThreshold < 0 || confidenceThreshold > 1) {
+        throw new Error('adaptive.confidenceThreshold: must be a number in [0, 1]');
+      }
+    }
+
+    if (adaptive.maxReplans !== undefined) {
+      const maxReplans = adaptive.maxReplans as unknown;
+      if (typeof maxReplans !== 'number' || !Number.isInteger(maxReplans) || maxReplans < 0) {
+        throw new Error('adaptive.maxReplans: must be a non-negative integer');
+      }
+    }
+
+    if (adaptive.diffMaxBytes !== undefined) {
+      const diffMaxBytes = adaptive.diffMaxBytes as unknown;
+      if (typeof diffMaxBytes !== 'number' || !Number.isInteger(diffMaxBytes) || diffMaxBytes <= 0) {
+        throw new Error('adaptive.diffMaxBytes: must be a positive integer');
+      }
+    }
+
+    if (adaptive.defaultEvaluator !== undefined) {
+      const defaultEvaluator = adaptive.defaultEvaluator as string;
+      if (typeof defaultEvaluator !== 'string') {
+        throw new Error('adaptive.defaultEvaluator: must be a string');
+      }
+      if (!config.commands[defaultEvaluator]) {
+        const candidates = Object.keys(config.commands);
+        const suggestion = nearest(defaultEvaluator, candidates)[0];
+        const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+        throw new Error(`adaptive.defaultEvaluator "${defaultEvaluator}" does not exist in commands${suggestionText}`);
+      }
+    }
+
+    if (adaptive.defaultReplanner !== undefined) {
+      const defaultReplanner = adaptive.defaultReplanner as string;
+      if (typeof defaultReplanner !== 'string') {
+        throw new Error('adaptive.defaultReplanner: must be a string');
+      }
+      if (!config.commands[defaultReplanner]) {
+        const candidates = Object.keys(config.commands);
+        const suggestion = nearest(defaultReplanner, candidates)[0];
+        const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+        throw new Error(`adaptive.defaultReplanner "${defaultReplanner}" does not exist in commands${suggestionText}`);
       }
     }
   }
@@ -556,6 +620,39 @@ export class ConfigManager {
     }
 
     return this.config.workspace;
+  }
+
+  getAdaptiveConfig(): AdaptiveConfig | undefined {
+    if (!this.config) {
+      throw new Error('Config not loaded. Call load() first.');
+    }
+    return this.config.adaptive;
+  }
+
+  getDefaultEvaluator(): string {
+    if (!this.config) {
+      throw new Error('Config not loaded. Call load() first.');
+    }
+    const evaluator = this.config.adaptive?.defaultEvaluator
+      ?? this.config.defaultPlanner
+      ?? this.config.default;
+    if (!this.config.commands[evaluator]) {
+      throw new Error(`Resolved default evaluator "${evaluator}" does not exist in commands`);
+    }
+    return evaluator;
+  }
+
+  getDefaultReplanner(): string {
+    if (!this.config) {
+      throw new Error('Config not loaded. Call load() first.');
+    }
+    const replanner = this.config.adaptive?.defaultReplanner
+      ?? this.config.defaultPlanner
+      ?? this.config.default;
+    if (!this.config.commands[replanner]) {
+      throw new Error(`Resolved default replanner "${replanner}" does not exist in commands`);
+    }
+    return replanner;
   }
 
 }

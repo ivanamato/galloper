@@ -1,0 +1,16 @@
+{
+  "default": "cmd-a",
+  "defaultPlanner": "cmd-a",
+  "adaptive": {
+    "confidenceThreshold": 0.8,
+    "maxReplans": 3,
+    "diffMaxBytes": 16384,
+    "defaultEvaluator": "cmd-b",
+    "defaultReplanner": "cmd-c"
+  },
+  "commands": {
+    "cmd-a": { "command": "echo a", "allowedSubcommands": [], "disallowedSubcommands": [] },
+    "cmd-b": { "command": "echo b", "allowedSubcommands": [], "disallowedSubcommands": [] },
+    "cmd-c": { "command": "echo c", "allowedSubcommands": [], "disallowedSubcommands": [] }
+  }
+}
