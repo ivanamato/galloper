@@ -81,6 +81,9 @@ Each hook in `hooks.lifecycle` can specify:
 - **`runOnSurprise`** (boolean, optional, `post-task-file` only, default `false`) - When `true`, the hook fires on paths classified as `surprise` (written but not declared). See trust-boundary docs.
 - **`timeoutMs`** (number, optional) - Timeout in milliseconds (default: 30000)
 - **`onFailure`** (string, optional) - What to do if hook fails: `"warn"`, `"retry"`, or `"abort"` (default: `"warn"`)
+- **`retry`** (object, optional, `post-task-file` only) - Per-hook retry with exponential backoff. See "Retry-with-backoff" below.
+- **`destructive`** (boolean, optional, default `false`) - Required acknowledgement when the command matches any pattern in `DestructivePatterns`. See "Destructive-hook gating" below.
+- **`onAbort`** (`"revert"` | `"keep"`, optional, `post-task-file` only, default `"keep"`) - Controls what happens to the workspace if this hook aborts the task. See "onAbort rollback" below.
 
 ### Template Placeholders
 
@@ -114,6 +117,99 @@ If you need to operate on arbitrary filenames from a post-task-file hook, use ar
   "command": ["./scripts/lint.sh", "{file}"]
 }
 ```
+
+### Destructive-hook gating
+
+At config-load time, every hook's `command` (string or string[]) is scanned against a conservative set of patterns known to be dangerous under automated repetition. If any pattern matches and the hook does not have `"destructive": true` set, **config load fails** with an error naming the matched pattern.
+
+The flag is **acknowledgement, not protection** — it does not change runtime behavior. It exists to force the author of the config to pause and think once at write time, so a dangerous command cannot drift in unnoticed.
+
+**Patterns currently flagged** (see `src/lib/DestructivePatterns.ts` for regexes):
+
+| Pattern | Example matches |
+|---|---|
+| `rm -rf` | `rm -rf foo`, `rm -fr foo`, `rm -Rf foo`, `rm -r -f foo`, `rm -f -r foo` |
+| `git reset --hard` | `git reset --hard HEAD~1`, `git reset --quiet --hard` |
+| `git push --force` | `git push --force origin main` (note: `--force-with-lease` is NOT flagged) |
+| `git clean -f` | `git clean -fd`, `git clean --force` (note: `--dry-run` is NOT flagged) |
+| `dd of=` | `dd if=/dev/zero of=/tmp/file` |
+| `mkfs` | `mkfs`, `mkfs.ext4`, `mkfs.xfs` |
+| `find -delete` | `find . -name '*.log' -delete` |
+| `chmod -R` / `chmod --recursive` | `chmod -R 777 .` |
+| `chown -R` / `chown --recursive` | `chown -R user:user .` |
+
+**Known false positives:** a shell-mode command that echoes any of these as literal text (e.g. `echo "rm -rf something"`) also trips the gate. That's intentional — the scan treats any substring match as a hit, because the validator has no general shell parser. Add `"destructive": true` to silence it.
+
+**How to acknowledge:**
+```json
+{
+  "match": "**/*",
+  "command": "rm -rf ./build",
+  "destructive": true
+}
+```
+
+**How to avoid it:** rewrite with argv mode and a surgical path, or use a non-destructive alternative (`git restore`, `rimraf`, etc.).
+
+### onAbort rollback
+
+When a `post-task-file` hook is configured with `"onFailure": "abort"` and its command exits non-zero, the hook *aborts the current task* (not the whole run — the task is marked aborted, later tasks continue unless `onTaskAbandoned: "abort"` is set). Whatever the task wrote to disk before the abort fired stays there by default.
+
+`onAbort` controls that behavior:
+
+- `"keep"` (default) — do nothing; partial task writes remain on disk.
+- `"revert"` — before propagating the abort, restore the workspace to the state captured at the start of the task via `captureBaseline`.
+
+**How revert is implemented:**
+1. `git reset --hard <baseline HEAD>` — restores tracked files to the committed snapshot.
+2. `git clean -fd` — removes any untracked files created during the task.
+3. If the baseline captured a `stashSha` (tracked dirty state present at baseline), `git stash apply <sha>` replays that dirty state on top.
+
+**Destructive-by-design:** `git reset --hard` + `git clean -fd` run on the task's `cwd`. Any uncommitted untracked files in `cwd` at the moment revert fires are **wiped**, whether they were there before the task or written by the task. That's the point of revert — but it means running `onAbort: revert` with a `cwd` that also contains work you care about will eat that work. Use it only against workspaces you're prepared to reset.
+
+**v1 limitation — untracked files at baseline are not restored.** `captureBaseline` uses `git stash create` (read-only, so baseline capture never mutates the tree). `stash create` only captures tracked-dirty state; it has no equivalent for untracked. If a user has untracked files present when baseline is captured, revert's `git clean -fd` deletes them and the later `git stash apply` won't put them back. This is a conscious trade-off: the only way to capture untracked non-destructively would be a filesystem snapshot outside git, which is deferred to a later pass. Config authors who need to protect untracked workspace files should not use `onAbort: revert`, or should commit-or-stage the files before running galloper.
+
+**Safety checklist before enabling `onAbort: revert`:**
+1. The `cwd` galloper runs in is a dedicated workspace (a task sandbox, a checked-out branch, a worktree) — not your daily editor's repo.
+2. Tracked files in `cwd` are committed at baseline time OR dirty state is acceptable to snapshot and replay (`stash create` handles this).
+3. Untracked files in `cwd` are either absent or disposable — they will be wiped on revert.
+4. You understand that `git reset --hard` and `git clean -fd` will run; you would not be surprised to see them in `git reflog`.
+
+**Example — safe use:**
+```json
+{
+  "match": "**/*.ts",
+  "shell": false,
+  "command": ["./scripts/typecheck.sh", "{file}"],
+  "onFailure": "abort",
+  "onAbort": "revert"
+}
+```
+`galloper implement --plan-file ...` run inside a per-task git worktree: the task writes `.ts` files, the hook type-checks, and on failure the worktree is reset cleanly. The user's daily editor cwd is untouched.
+
+**Example — dangerous use (don't do this):**
+Same hook, but running `galloper implement` in the directory where you're actively editing code with uncommitted changes. The revert would wipe that work.
+
+**Events emitted:** on every abort where `onAbort` is consulted, a `workspace.reverted` event is appended to the central log with `{ taskId, reverted: boolean, reason?: string }`. `reason` carries `"non-git"`, `"unborn-branch"`, or a git stderr snippet when revert was skipped or failed; absent when `reverted: true`.
+
+### Retry-with-backoff
+
+Post-task-file hooks accept a `retry` policy:
+
+```json
+{
+  "match": "**/*.ts",
+  "command": "npx eslint --fix {file} && npx eslint {file}",
+  "onFailure": "retry",
+  "retry": { "maxAttempts": 3, "backoffMs": 250, "jitter": 0.2 }
+}
+```
+
+- `maxAttempts` — integer in `[1, 20]`. Hook re-runs up to this many times on non-zero exit.
+- `backoffMs` — non-negative integer. Base delay between attempts; exponential: `backoffMs * 2^(n-1)`.
+- `jitter` — optional number in `[0, 1]`. Adds `± backoffMs * jitter * rand(-1,1)` to each delay to avoid thundering-herd.
+
+Retry kicks in only when `onFailure` resolves to `"retry"` (the default). A hook with `onFailure: "warn"` or `"abort"` skips the retry loop even if `retry` is set — retry is paired with "this is intended to be retried" semantics. The final `HookFailure` reports `hookRetryCount` = the number of attempts actually made.
 
 ### Example Lifecycle Hook Configuration
 

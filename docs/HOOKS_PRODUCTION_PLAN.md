@@ -1,8 +1,12 @@
 # Hooks — Production Hardening Plan
 
-**Status.** Step 1 landed; the trust boundary is closed for the single-root git case. Remaining steps are still design. This expands ROADMAP §11 (Hook Coverage for Undeclared File Changes) into a concrete, sequenced plan grounded in the current code in `src/lib/HookDispatcher.ts`, `src/lib/TaskRunner.ts`, `src/lib/ConfigManager.ts`, `src/lib/WorkspaceReconciler.ts`, and `src/lib/Doctor.ts`.
+**Status.** Steps 1, 2, 5, 6, 9 landed — the MVP path from §5 is complete. Steps 3, 4, 7, 8, 10 are still design. This expands ROADMAP §11 (Hook Coverage for Undeclared File Changes) into a concrete, sequenced plan grounded in the current code in `src/lib/HookDispatcher.ts`, `src/lib/TaskRunner.ts`, `src/lib/ConfigManager.ts`, `src/lib/WorkspaceReconciler.ts`, `src/lib/HookTemplate.ts`, `src/lib/PathLock.ts`, `src/lib/DestructivePatterns.ts`, and `src/lib/Doctor.ts`.
 
-**Implemented (Step 1).** Git-only single-root baseline capture + porcelain-v2 reconciliation + declared/surprise/churn classification; `post-task-file` hooks now fire on the reconciled set with `runOnSurprise` gating; per-task classified manifests persist on `RunManifest.taskManifests`; new events `task.file.declared`, `task.file.surprise`, `task.file.churn`, `workspace.baseline.captured`, `workspace.reconciled` on the bus. See `src/lib/WorkspaceReconciler.ts` and `tests/integration/trust-boundary.test.ts` (acceptance scenarios 1, 5-byproduct, 7).
+**Implemented.**
+- **Step 1 — workspace-aware detection (git-only, single-root).** Baseline capture + porcelain-v2 reconciliation + declared/surprise/churn classification; `post-task-file` hooks fire on the reconciled set with `runOnSurprise` gating; per-task classified manifests persist on `RunManifest.taskManifests`. Events: `task.file.declared`, `task.file.surprise`, `task.file.churn`, `workspace.baseline.captured`, `workspace.reconciled`. See `src/lib/WorkspaceReconciler.ts` and `tests/integration/trust-boundary.test.ts`.
+- **Step 5 — command ergonomics + safety.** Template substitution (`{file}`, `{path}`, `{action}`, `{classification}`, `{sessionId}`, `{taskId}`, `{attempt}`, `{root}`), `shell: false` argv mode, shell-mode path-injection gating. See `src/lib/HookTemplate.ts`.
+- **Step 6 — scale.** Per-path `PathLock` (same-file hooks serialize, different files run concurrently), `WorkerPool`-backed fan-out in `TaskRunner` (default concurrency 4, `concurrency: 1` preserves the pre-pool ordering invariant), `retry: { maxAttempts, backoffMs, jitter }` on hook entries. See `src/lib/PathLock.ts` and `tests/integration/hook-*.test.ts`.
+- **Step 9 — safety net.** `DestructivePatterns` validator scan with `destructive: true` acknowledgement, `AbortHookError` carrying the aborting hook's index, `onAbort: 'revert' | 'keep'` on post-task-file hooks, `revertToBaseline` (destructive-by-design), `workspace.reverted` event. Baseline capture is now **read-only** via `git stash create` — consult §5 "Step 9 caveats" for the incident that forced this design and the accepted v1 limitations (notably: untracked files at baseline are not restored on revert). Full safety guidance lives in `docs/EVENTS_AND_HOOKS.md`.
 
 **Scope.** Everything required to move the hook system from "works on the happy path" to "I would run this against a real codebase unsupervised." The plan has two halves:
 
@@ -394,11 +398,11 @@ Minimum viable production-ready = steps 1, 2, 5, 6, 9. Everything else separates
 | 2 | Classification + `runOnSurprise` + new events (`task.file.declared`, `.surprise`, `.churn`, `workspace.baseline.captured`, `.reconciled`) | S | Hooks can actually defend | **done** as part of Step 1; `out-of-workspace` deferred to Step 3 |
 | 3 | Workspace roots config + Doctor validation for roots + `out-of-workspace` classification | M | Multi-repo story | pending |
 | 4 | Watcher layer + quiesce gate + `workspace.noisy` event + authoritative churn | M | Non-git coverage, real-time UX hooks, gitignored-write detection | pending |
-| 5 | Template substitution + argv mode + path validation | S | Security + ergonomics | pending |
-| 6 | Parallel execution with per-path write lock + retry-with-backoff | M | Scale | pending |
+| 5 | Template substitution + argv mode + path validation | S | Security + ergonomics | **done** — `HookTemplate.ts`, `{file}`/`{path}`/`{action}`/`{classification}`/`{sessionId}`/`{taskId}`/`{attempt}`/`{root}` placeholders, `shell:false` argv mode, path-injection gating |
+| 6 | Parallel execution with per-path write lock + retry-with-backoff | M | Scale | **done** — `PathLock.ts` (per-file serialization), `WorkerPool` fan-out in TaskRunner (default concurrency=4), `retry: { maxAttempts, backoffMs, jitter }` on hook entries |
 | 7 | Per-hook `hookInvocationId` + timing + decision trace | S | Debuggability | pending |
 | 8 | Hook test harness + `--dry-run-hooks` | S | Dev loop for hook authors | pending |
-| 9 | Destructive-hook gating + `onAbort` rollback | S | Safety net | pending |
+| 9 | Destructive-hook gating + `onAbort` rollback | S | Safety net | **done** — `DestructivePatterns.ts` + validator, `AbortHookError` with `hookIndex`, `captureBaseline` via `git stash create` (read-only), `revertToBaseline`, `workspace.reverted` event. See "Step 9 caveats" below. |
 | 10 | Event payload schemas + MCP projection | M | Production-grade observability | pending |
 
 **Dependency notes.**
@@ -406,6 +410,21 @@ Minimum viable production-ready = steps 1, 2, 5, 6, 9. Everything else separates
 - Step 6 depends on the per-path write lock from §4.6; must land together.
 - Step 9's `onAbort: revert` depends on the baseline from step 1.
 - Step 10 (event schemas) can begin early; retrofitting schemas after MCP exposure calcifies a bad shape.
+
+### Step 9 caveats
+
+`captureBaseline` was initially implemented with `git stash push --include-untracked` + immediate `stash pop` so the baseline could carry both dirty-tracked AND untracked state. That sequence **mutates the working tree** — push clears it, pop restores it. When run against the galloper repo itself (any test path that sets `cwd: process.cwd()`), the push raced against uncommitted Step 9 work and wiped it. Stash reflog from the incident: `stash@{0}: On master: galloper-baseline`.
+
+**Fix:** `captureBaseline` now uses `git stash create`, which builds a commit object representing the current tree state but **does not touch the working tree or the stash stack**. Baseline capture is fully read-only. Verified by a unit test that asserts file contents before/after `captureBaseline` are identical on a dirty tree.
+
+**Consequences accepted:**
+1. **Untracked files at baseline are not captured.** `git stash create` covers tracked dirty state only. Revert's `git clean -fd` removes any untracked files (whether present at baseline or written by the task), and the subsequent `stash apply` doesn't restore untracked. Config authors who need their untracked workspace files protected should either commit/stage them before running galloper, or not use `onAbort: revert`.
+2. **Revert is destructive by design.** `git reset --hard` + `git clean -fd` run on the task's `cwd`. This is the feature; it is gated behind an explicit `onAbort: 'revert'` opt-in and should only be used against a workspace the user is prepared to reset (per-task worktrees, sandboxed checkouts, dedicated dev containers). `docs/EVENTS_AND_HOOKS.md` carries the safety checklist for config authors.
+3. **Destructive-hook gating is acknowledgement, not enforcement.** The validator rejects `rm -rf`, `git reset --hard`, etc. in hook command strings unless `destructive: true` is set. It cannot prevent the command from running once acknowledged, and it cannot catch destructive calls made by galloper's own internal code paths (e.g. `revertToBaseline`). Those remain the responsibility of the implementation to keep narrowly-scoped.
+
+**Future work on Step 9:**
+- Non-destructive untracked-file snapshot (copy to a temp dir at baseline time, restore on revert). Not done for v1 because the cost-vs-benefit wasn't clear and the simpler fix unblocked the acceptance tests.
+- Runtime guard that refuses `onAbort: revert` when `cwd` is detected to match the running galloper repo's own root (heuristic: compare `cwd` to `require.main`'s package root or similar). Would turn the current "don't point revert at your dev repo" doc warning into a refuse-and-warn runtime check.
 
 ---
 
