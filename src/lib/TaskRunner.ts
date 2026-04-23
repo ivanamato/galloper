@@ -8,11 +8,11 @@ import { Executioner } from './Executioner.js';
 import { CoreRunner } from './CoreRunner.js';
 import { Logger } from './Logger.js';
 import { HumanReporter, NullHumanReporter } from './HumanReporter.js';
-import { HookDispatcher, type HooksConfig } from './HookDispatcher.js';
+import { HookDispatcher, AbortHookError, type HooksConfig } from './HookDispatcher.js';
 import { WorkerPool } from './WorkerPool.js';
 import { WriteLock } from './WriteLock.js';
 import type { CommandResolver } from './CommandResolver.js';
-import { captureBaseline, reconcile, classify, type Baseline } from './WorkspaceReconciler.js';
+import { captureBaseline, reconcile, classify, revertToBaseline, type Baseline } from './WorkspaceReconciler.js';
 import type { TaskManifest } from './SessionManager.js';
 
 export interface TaskRunnerInput {
@@ -456,8 +456,9 @@ export class TaskRunner {
             ...classified.declared.map((f) => ({ file: { path: f.path, action: f.action }, classification: 'declared' as const })),
             ...classified.surprise.map((f) => ({ file: { path: f.path, action: f.action }, classification: 'surprise' as const })),
           ];
-          const pool = new WorkerPool<{ index: number; failures: HookFailure[]; abortError?: Error }>(Math.max(1, concurrency));
+          const pool = new WorkerPool<{ index: number; failures: HookFailure[]; abortError?: Error; abortHookIndex?: number }>(Math.max(1, concurrency));
           let abortError: Error | null = null;
+          let abortHookIndex: number | undefined;
           const pooled = dispatchSet.map((item, index) =>
             pool.enqueue(async () => {
               try {
@@ -473,6 +474,9 @@ export class TaskRunner {
                 });
                 return { index, failures };
               } catch (error) {
+                if (error instanceof AbortHookError) {
+                  return { index, failures: [], abortError: error, abortHookIndex: error.hookIndex };
+                }
                 if (error instanceof Error && (error.message.includes('aborted') || error.message.includes('Abort'))) {
                   return { index, failures: [], abortError: error };
                 }
@@ -484,10 +488,32 @@ export class TaskRunner {
           const results = await Promise.all(pooled);
           results.sort((a, b) => a.index - b.index);
           for (const r of results) {
-            if (r.abortError && !abortError) abortError = r.abortError;
+            if (r.abortError && !abortError) {
+              abortError = r.abortError;
+              abortHookIndex = r.abortHookIndex;
+            }
             attemptRecord.hookFailures.push(...r.failures);
           }
-          if (abortError) throw abortError;
+          if (abortError) {
+            // Before propagating, consult the aborting hook's onAbort policy.
+            // If `revert` AND we have a usable baseline, restore the workspace
+            // so partial task writes don't leak into the tree. Revert errors
+            // are logged but do not mask the original abort.
+            const postHooks = input.hooksConfig?.lifecycle?.['post-task-file'] ?? [];
+            const abortingHook = abortHookIndex !== undefined ? postHooks[abortHookIndex] : undefined;
+            if (abortingHook?.onAbort === 'revert' && baseline != null) {
+              const revertRes = await revertToBaseline(input.cwd, baseline);
+              await input.logger.append({
+                sessionId,
+                type: 'workspace.reverted',
+                timestamp: new Date().toISOString(),
+                taskId: task.id,
+                reverted: revertRes.reverted,
+                ...(revertRes.reason ? { reason: revertRes.reason } : {}),
+              });
+            }
+            throw abortError;
+          }
 
           attemptRecord.endedAt = new Date().toISOString();
           taskState.attempts.push(attemptRecord);
