@@ -816,4 +816,82 @@ it('throws on unknown event name with suggestion', async () => {
     } as any;
     expect(() => validateLlmConfig(cfg)).toThrow(/retry must be an object/);
   });
+
+  it('rejects a destructive command without the destructive flag', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'rm -rf /tmp/x', match: '**/*.ts' } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/destructive pattern 'rm -rf'/);
+  });
+
+  it('accepts a destructive command when the destructive flag is set', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'rm -rf /tmp/x', match: '**/*.ts', destructive: true } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).not.toThrow();
+  });
+
+  it('rejects a destructive array-form command without the flag', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: ['rm', '-rf', '/tmp/x'], match: '**/*.ts', shell: false } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/destructive pattern 'rm -rf'/);
+  });
+
+  it('throws when destructive is not a boolean', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo hi', match: '**/*.ts', destructive: 'yes' } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/destructive must be a boolean/);
+  });
+
+  it("accepts onAbort: 'revert'", async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', onAbort: 'revert' } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).not.toThrow();
+  });
+
+  it('rejects onAbort with an unknown value', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', onAbort: 'rollback' } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/onAbort must be 'revert' or 'keep'/);
+  });
 });
