@@ -1,6 +1,7 @@
 import { promises as fs, constants as fsConstants } from 'node:fs';
 import { platform } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
+import picomatch from 'picomatch';
 import { LlmConfig } from './ConfigManager.js';
 import { nearest } from './Suggest.js';
 
@@ -26,7 +27,11 @@ export const KNOWN_EVENTS = [
   'task.attempt.failed',
   'task.abandoned',
   'task.aborted',
+  'task.file.out-of-workspace',
+  'workspace.noisy',
+  'workspace.watcher.dropped',
   'hook.failed',
+  'hook.decision',
 ] as const;
 
 function extractFirstToken(command: string): string {
@@ -53,6 +58,58 @@ function isValidGlob(glob: string): boolean {
   }
 
   return bracketCount === 0 && braceCount === 0;
+}
+
+function extractFirstPathComponent(glob: string): string {
+  // Extract first literal path component that doesn't contain wildcards
+  // E.g., 'api' from 'api/**/*.ts'
+  // E.g., '' from '**/*.ts' or './**/*.ts'
+  let current = '';
+  for (const char of glob) {
+    if (char === '/') break;
+    if (char === '*' || char === '[' || char === '{') break;
+    current += char;
+  }
+  // Ignore . and .. as they don't represent glob content
+  if (current === '.' || current === '..') {
+    return '';
+  }
+  return current;
+}
+
+function normalizePathForMatching(p: string): string {
+  // Remove leading ./ for consistency
+  if (p.startsWith('./')) {
+    return p.slice(2);
+  }
+  return p;
+}
+
+function couldGlobMatchInRoot(glob: string, rootPath: string): boolean {
+  // Check if glob could match something under this root
+  try {
+    const matcher = picomatch(glob, { dot: true });
+    const firstComponent = extractFirstPathComponent(glob);
+
+    // If glob has no literal first component, it's broad (e.g., **/* or *.ts)
+    if (!firstComponent) {
+      return true;
+    }
+
+    // Construct plausible test paths that would exist under this root
+    let testPath: string;
+    if (rootPath === '.' || rootPath === './') {
+      testPath = `${firstComponent}/testfile.ts`;
+    } else {
+      testPath = `${rootPath}/${firstComponent}/testfile.ts`;
+    }
+
+    testPath = normalizePathForMatching(testPath);
+    return matcher(testPath);
+  } catch {
+    // If glob is invalid or matching fails, assume it could match
+    return true;
+  }
 }
 
 export interface DoctorIssue {
@@ -219,6 +276,37 @@ export async function runDoctor(config: LlmConfig, deps: DoctorDeps): Promise<Do
           message: `workspace root '${root.label}' declared vcs:'none' but .git present at '${root.path}'`,
           path: `workspace.roots[${i}].vcs`,
         });
+      }
+    }
+  }
+
+  // Check that lifecycle hook globs could match paths under workspace roots
+  if (config.hooks?.lifecycle && config.workspace?.roots) {
+    const lifecyclePhases = Object.keys(config.hooks.lifecycle) as Array<keyof typeof config.hooks.lifecycle>;
+    for (const phase of lifecyclePhases) {
+      const phaseHooks = config.hooks.lifecycle[phase];
+      if (Array.isArray(phaseHooks)) {
+        for (let i = 0; i < phaseHooks.length; i++) {
+          const hook = phaseHooks[i];
+          if (hook.match) {
+            // Check if this glob could match anything under any workspace root
+            let couldMatch = false;
+            for (const root of config.workspace.roots) {
+              if (couldGlobMatchInRoot(hook.match, root.path)) {
+                couldMatch = true;
+                break;
+              }
+            }
+
+            if (!couldMatch) {
+              warnings.push({
+                code: 'WORKSPACE_GLOB_ORPHAN',
+                message: `hook glob pattern '${hook.match}' in ${phase} cannot match anything under any declared workspace root`,
+                path: `hooks.lifecycle.${phase}[${i}].match`,
+              });
+            }
+          }
+        }
       }
     }
   }

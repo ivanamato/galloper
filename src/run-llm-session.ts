@@ -9,6 +9,7 @@ import { ConfigManager } from './lib/ConfigManager.js';
 import { CoreRunner } from './lib/CoreRunner.js';
 import { Planner } from './lib/Planner.js';
 import { Executioner } from './lib/Executioner.js';
+import { DryRunHooks } from './lib/DryRunHooks.js';
 import { Orchestrator, OrchestratorInput, isSubcommand, SubcommandName } from './lib/Orchestrator.js';
 import { clampVerbosity } from './lib/Verbosity.js';
 import { ConsoleHumanReporter, NullHumanReporter } from './lib/HumanReporter.js';
@@ -39,6 +40,7 @@ interface CliArgs {
   force?: boolean;
   nonInteractive?: boolean;
   defaultName?: string;
+  dryRunHooks?: boolean;
 }
 
 function printUsage(): void {
@@ -55,9 +57,10 @@ Subcommands:
 Options:
   --prompt <text>        The prompt text (required for single-prompt/plan if --prompt-file not provided)
   --prompt-file <path>   Path to a file containing the prompt (for single-prompt/plan)
-  --plan-file <path>     Path to a plan JSON file (required for implement)
+  --plan-file <path>     Path to a plan JSON file (required for implement/--dry-run-hooks)
   --config <path>        Path to galloper.json (optional for doctor, default: ./galloper.json)
   --concurrency <n>      Number of concurrent tasks (default: 1, sequential)
+  --dry-run-hooks        Analyze which hooks would match without executing (requires --plan-file)
   --force                (init) Overwrite an existing galloper.json
   --non-interactive      (init) Skip prompts; select all detected CLIs, first as default
   --default <name>       (init) Use the named CLI as the default command
@@ -122,6 +125,8 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (token === '--default') {
       parsed.defaultName = argv[i + 1];
       i += 1;
+    } else if (token === '--dry-run-hooks') {
+      parsed.dryRunHooks = true;
     } else if (/^-v+$/.test(token)) {
       parsed.verbosity = token.length - 1;
     } else if (token === '--human-friendly' || token === '-H') {
@@ -221,6 +226,33 @@ async function main(): Promise<void> {
       }
     } finally {
       prompter?.close();
+    }
+    return;
+  }
+
+  // Handle --dry-run-hooks flag
+  if (args.dryRunHooks) {
+    if (args.subcommand !== 'plan') {
+      throw new Error('--dry-run-hooks is only valid with the "plan" subcommand');
+    }
+    if (!args.planFile) {
+      throw new Error('--dry-run-hooks requires --plan-file <path>');
+    }
+
+    const configPath = args.configPath ? path.resolve(CWD, args.configPath) : CONFIG_PATH;
+    const configManager = new ConfigManager({ configPath });
+
+    try {
+      const dryRunHooks = new DryRunHooks(configManager);
+      const planFilePath = path.resolve(CWD, args.planFile);
+      const result = await dryRunHooks.run(planFilePath);
+
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      process.exitCode = 0;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`${message}\n`);
+      process.exitCode = 1;
     }
     return;
   }

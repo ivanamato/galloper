@@ -10,6 +10,11 @@ export interface TaskManifest {
   declared: ClassifiedPath[];
   surprise: ClassifiedPath[];
   churn: ClassifiedPath[];
+  /**
+   * Per-root classification (Step 3C). Maps root label to its classified paths.
+   * Optional for back-compat with single-root scenarios.
+   */
+  perRoot?: Record<string, { declared: ClassifiedPath[]; surprise: ClassifiedPath[]; churn: ClassifiedPath[] }>;
 }
 
 export interface SessionRecord {

@@ -20,6 +20,13 @@ export interface RunOptions {
   cwd: string;
   env: NodeJS.ProcessEnv;
   logger: Logger;
+  /**
+   * Invoked once per complete newline-delimited stdout line, as the subprocess
+   * streams output. Exceptions thrown by the callback are swallowed so a bad
+   * consumer cannot break the run. The trailing partial (no newline) is
+   * flushed before `close` resolves.
+   */
+  onStdoutLine?: (line: string) => void;
 }
 
 export class CoreRunner {
@@ -39,6 +46,16 @@ export class CoreRunner {
       message: `[subprocess] Spawned: /bin/sh -c ${options.llmCommand.substring(0, 50)}...`,
     });
 
+    let stdoutLineBuf = '';
+    const emitLine = (line: string): void => {
+      if (!options.onStdoutLine || line.length === 0) return;
+      try {
+        options.onStdoutLine(line);
+      } catch {
+        // swallow — a broken consumer must not break the run
+      }
+    };
+
     return new Promise((resolve, reject) => {
       const child = spawn('/bin/sh', ['-c', options.llmCommand], {
         cwd: options.cwd,
@@ -49,6 +66,14 @@ export class CoreRunner {
       child.stdout.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         stdoutChunks.push(text);
+        if (options.onStdoutLine) {
+          stdoutLineBuf += text;
+          let nlIdx: number;
+          while ((nlIdx = stdoutLineBuf.indexOf('\n')) !== -1) {
+            emitLine(stdoutLineBuf.slice(0, nlIdx));
+            stdoutLineBuf = stdoutLineBuf.slice(nlIdx + 1);
+          }
+        }
         pendingLogs.push(options.logger.append({
           sessionId: options.sessionId,
           type: 'process.stdout',
@@ -78,6 +103,10 @@ export class CoreRunner {
 
       child.on('close', (code: number | null) => {
         const endedAt = new Date().toISOString();
+        if (stdoutLineBuf.length > 0) {
+          emitLine(stdoutLineBuf);
+          stdoutLineBuf = '';
+        }
         Promise.all(pendingLogs).finally(() => {
           resolve({
             stdout: stdoutChunks.join(''),

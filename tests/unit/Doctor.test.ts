@@ -429,3 +429,127 @@ describe('runDoctor workspace.roots', () => {
     expect(errors[0].path).toBe('workspace.roots[1].path');
   });
 });
+
+describe('workspace glob validation', () => {
+  it('should emit no warning for glob **/*.ts with root .', async () => {
+    const rootPath = '/test/workspace/root';
+    const gitPath = `${rootPath}/.git`;
+
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      hooks: {
+        lifecycle: {
+          'post-task-file': [
+            {
+              match: '**/*.ts',
+            },
+          ],
+        },
+      },
+      workspace: {
+        roots: [
+          {
+            path: '.',
+            label: 'Current Directory',
+            vcs: 'git',
+          },
+        ],
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude'], [rootPath, gitPath]);
+    const report = await runDoctor(config, deps);
+
+    const warnings = report.warnings.filter((w) => w.code === 'WORKSPACE_GLOB_ORPHAN');
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('should emit warning for glob api/**/*.ts with only root at ../sibling-frontend', async () => {
+    const rootPath = '/test/workspace/sibling-frontend';
+    const gitPath = `${rootPath}/.git`;
+
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      hooks: {
+        lifecycle: {
+          'post-task-file': [
+            {
+              match: 'api/**/*.ts',
+            },
+          ],
+        },
+      },
+      workspace: {
+        roots: [
+          {
+            path: '../sibling-frontend',
+            label: 'Sibling Frontend',
+            vcs: 'git',
+          },
+        ],
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude'], [rootPath, gitPath]);
+    const report = await runDoctor(config, deps);
+
+    const warnings = filterErrors(report.warnings, 'WORKSPACE_GLOB_ORPHAN');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].path).toBe('hooks.lifecycle.post-task-file[0].match');
+    expect(warnings[0].message).toContain('api/**/*.ts');
+  });
+
+  it('should emit no warning for glob api/**/*.ts when root can contain api/', async () => {
+    const rootPath = '/test/workspace/root';
+    const gitPath = `${rootPath}/.git`;
+
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      hooks: {
+        lifecycle: {
+          'post-task-file': [
+            {
+              match: 'api/**/*.ts',
+            },
+          ],
+        },
+      },
+      workspace: {
+        roots: [
+          {
+            path: '.',
+            label: 'Root',
+            vcs: 'git',
+          },
+        ],
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude'], [rootPath, gitPath]);
+    const report = await runDoctor(config, deps);
+
+    const warnings = report.warnings.filter((w) => w.code === 'WORKSPACE_GLOB_ORPHAN');
+    expect(warnings).toHaveLength(0);
+  });
+});

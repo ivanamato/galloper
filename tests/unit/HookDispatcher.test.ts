@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HookDispatcher, type LifecycleHookConfig, type HooksConfig } from '../../src/lib/HookDispatcher.js';
+import { Logger } from '../../src/lib/Logger.js';
 
 describe('HookDispatcher', () => {
   let tempDir: string;
@@ -376,16 +377,11 @@ describe('HookDispatcher', () => {
         { sessionId: 'test-session-123', cwd: tempDir }
       );
 
-      // Give event dispatcher time to execute
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await dispatcher.drainEventHooks();
 
-      try {
-        const output = require('node:fs').readFileSync(outputFile, 'utf-8');
-        expect(output).toContain('test-session-123');
-        expect(output).toContain(tempDir);
-      } catch {
-        // Event might not have fired yet in test, which is OK for fire-and-forget
-      }
+      const output = require('node:fs').readFileSync(outputFile, 'utf-8');
+      expect(output).toContain('test-session-123');
+      expect(output).toContain(tempDir);
     });
   });
 
@@ -474,6 +470,209 @@ describe('HookDispatcher', () => {
       });
 
       expect(output).toContain('hook fired');
+    });
+  });
+
+  describe('hookInvocationId tracking', () => {
+    it('should propagate hookInvocationId to environment variable', async () => {
+      const outputFile = join(tempDir, 'invocation-id.txt');
+      const hookConfig: HooksConfig = {
+        lifecycle: {
+          'post-task': [
+            {
+              command: `echo "$DEVFLOW_HOOK_INVOCATION_ID" > ${outputFile}`,
+            },
+          ],
+        },
+      };
+
+      const dispatcher = new HookDispatcher(hookConfig);
+      const failures = await dispatcher.runPost('post-task', {
+        sessionId: 'test-invocation',
+        cwd: tempDir,
+      });
+
+      // Verify the UUID was written (UUID v4 format)
+      const output = require('node:fs').readFileSync(outputFile, 'utf-8').trim();
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      expect(output).toMatch(uuidRegex);
+    });
+
+    it('should attach hookInvocationId to HookFailure', async () => {
+      const hookConfig: HooksConfig = {
+        lifecycle: {
+          'post-task': [
+            {
+              command: 'exit 1',
+              onFailure: 'warn',
+            },
+          ],
+        },
+      };
+
+      const dispatcher = new HookDispatcher(hookConfig);
+      const failures = await dispatcher.runPost('post-task', {
+        sessionId: 'test-failure',
+        cwd: tempDir,
+      });
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.hookInvocationId).toBeDefined();
+      // Verify it's a valid UUID
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      expect(failures[0]?.hookInvocationId).toMatch(uuidRegex);
+    });
+
+    it('should track invocationDurationMs separately from total durationMs', async () => {
+      const hookConfig: HooksConfig = {
+        lifecycle: {
+          'post-task': [
+            {
+              command: 'sleep 0.1 && exit 1',
+              onFailure: 'warn',
+            },
+          ],
+        },
+      };
+
+      const dispatcher = new HookDispatcher(hookConfig);
+      const failures = await dispatcher.runPost('post-task', {
+        sessionId: 'test-duration',
+        cwd: tempDir,
+      });
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.invocationDurationMs).toBeDefined();
+      expect(failures[0]?.invocationDurationMs).toBeGreaterThanOrEqual(100);
+      expect(failures[0]?.durationMs).toBeGreaterThanOrEqual(100);
+    });
+  });
+
+  describe('hook.decision events', () => {
+    it('should emit hook.decision event for glob skip on post-task-file', async () => {
+      const logDir = join(tempDir, 'logs');
+      const logPath = join(logDir, 'runs.jsonl');
+      const logger = new Logger({ logsDir: logDir, centralLogPath: logPath });
+
+      const hookConfig: HooksConfig = {
+        lifecycle: {
+          'post-task-file': [
+            {
+              match: '*.ts',
+              command: 'echo "ts file"',
+            },
+          ],
+        },
+      };
+
+      const dispatcher = new HookDispatcher(hookConfig, undefined, logger);
+      await dispatcher.runPost('post-task-file', {
+        file: { path: 'test.md', action: 'edit' },
+        sessionId: 'test-decision-glob',
+        cwd: tempDir,
+      });
+
+      // Read the log file and verify hook.decision event exists
+      const logContent = require('node:fs').readFileSync(logPath, 'utf-8');
+      const lines = logContent.trim().split('\n').filter((l: string) => l.length > 0);
+      const decisionEvents = lines
+        .map((line: string) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter((evt: any) => evt?.type === 'hook.decision');
+
+      expect(decisionEvents.length).toBeGreaterThan(0);
+      expect(decisionEvents[0]?.verdict).toBe('skipped-glob');
+      expect(decisionEvents[0]?.file).toBe('test.md');
+      expect(decisionEvents[0]?.hookInvocationId).toBeDefined();
+    });
+
+    it('should emit hook.decision event for action skip on post-task-file', async () => {
+      const logDir = join(tempDir, 'logs');
+      const logPath = join(logDir, 'runs.jsonl');
+      const logger = new Logger({ logsDir: logDir, centralLogPath: logPath });
+
+      const hookConfig: HooksConfig = {
+        lifecycle: {
+          'post-task-file': [
+            {
+              match: 'src/**/*',
+              action: 'create',
+              command: 'echo "create"',
+            },
+          ],
+        },
+      };
+
+      const dispatcher = new HookDispatcher(hookConfig, undefined, logger);
+      await dispatcher.runPost('post-task-file', {
+        file: { path: 'src/test.ts', action: 'edit' },
+        sessionId: 'test-decision-action',
+        cwd: tempDir,
+      });
+
+      // Read the log file and verify hook.decision event for skipped-action
+      const logContent = require('node:fs').readFileSync(logPath, 'utf-8');
+      const lines = logContent.trim().split('\n').filter((l: string) => l.length > 0);
+      const decisionEvents = lines
+        .map((line: string) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter((evt: any) => evt?.type === 'hook.decision');
+
+      expect(decisionEvents.length).toBeGreaterThan(0);
+      expect(decisionEvents[0]?.verdict).toBe('skipped-action');
+      expect(decisionEvents[0]?.action).toBe('edit');
+    });
+
+    it('should emit hook.decision event for surprise skip on post-task-file', async () => {
+      const logDir = join(tempDir, 'logs');
+      const logPath = join(logDir, 'runs.jsonl');
+      const logger = new Logger({ logsDir: logDir, centralLogPath: logPath });
+
+      const hookConfig: HooksConfig = {
+        lifecycle: {
+          'post-task-file': [
+            {
+              match: '**/*',
+              command: 'echo "surprise"',
+              // Note: runOnSurprise is NOT set, so should skip surprise paths
+            },
+          ],
+        },
+      };
+
+      const dispatcher = new HookDispatcher(hookConfig, undefined, logger);
+      await dispatcher.runPost('post-task-file', {
+        file: { path: 'unexpected.txt', action: 'create' },
+        sessionId: 'test-decision-surprise',
+        cwd: tempDir,
+        classification: 'surprise',
+      });
+
+      // Read the log file and verify hook.decision event for skipped-surprise
+      const logContent = require('node:fs').readFileSync(logPath, 'utf-8');
+      const lines = logContent.trim().split('\n').filter((l: string) => l.length > 0);
+      const decisionEvents = lines
+        .map((line: string) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter((evt: any) => evt?.type === 'hook.decision');
+
+      expect(decisionEvents.length).toBeGreaterThan(0);
+      expect(decisionEvents[0]?.verdict).toBe('skipped-surprise');
     });
   });
 });

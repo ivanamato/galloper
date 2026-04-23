@@ -1,0 +1,8 @@
+{
+  "id": "test-plan-dry-run-hooks",
+  "createdAt": "2026-04-23T00:00:00.000Z",
+  "prompt": "Test plan for dry-run-hooks",
+  "command": "mock-json",
+  "sessionId": "test-session-dry-run-hooks",
+  "content": "{\"planId\":\"test-plan-dry-run-hooks\",\"tasks\":[{\"id\":\"t1\",\"title\":\"Create TypeScript source file\",\"files\":[{\"path\":\"src/index.ts\",\"action\":\"create\"},{\"path\":\"src/lib/utils.ts\",\"action\":\"create\"}],\"instructions\":\"Create new TypeScript files\",\"verify\":\"ls -la src/*.ts\",\"dependsOn\":[]},{\"id\":\"t2\",\"title\":\"Edit README\",\"files\":[{\"path\":\"README.md\",\"action\":\"edit\"}],\"instructions\":\"Update README\",\"verify\":\"cat README.md\",\"dependsOn\":[]},{\"id\":\"t3\",\"title\":\"Add test file\",\"files\":[{\"path\":\"tests/unit/main.test.ts\",\"action\":\"create\"},{\"path\":\"src/config.ts\",\"action\":\"edit\"}],\"instructions\":\"Add test file and update config\",\"verify\":\"npm test\",\"dependsOn\":[\"t1\"]}]}"
+}

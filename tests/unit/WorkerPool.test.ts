@@ -21,7 +21,9 @@ describe('WorkerPool', () => {
       pool.enqueue(async () => {
         running.push(n);
         snapshots.push(running.length);
-        await new Promise((r) => setTimeout(r, 5));
+        const { promise: barrier, resolve } = Promise.withResolvers<void>();
+        resolve();
+        await barrier;
         running.splice(running.indexOf(n), 1);
         return n;
       });
@@ -35,11 +37,14 @@ describe('WorkerPool', () => {
     const pool = new WorkerPool<number>(3);
     let running = 0;
     let maxRunning = 0;
+    const { promise: barrier, resolve: resolveBarrier } = Promise.withResolvers<void>();
+
     const tasks = Array.from({ length: 10 }, (_, i) =>
       pool.enqueue(async () => {
         running += 1;
         maxRunning = Math.max(maxRunning, running);
-        await new Promise((r) => setTimeout(r, 5));
+        if (running === 3) resolveBarrier();
+        await barrier;
         running -= 1;
         return i;
       }),
@@ -83,7 +88,9 @@ describe('WorkerPool', () => {
   it('accepts new tasks enqueued while others are still running', async () => {
     const pool = new WorkerPool<string>(2);
     const slow = pool.enqueue(async () => {
-      await new Promise((r) => setTimeout(r, 20));
+      const { promise: barrier, resolve } = Promise.withResolvers<void>();
+      resolve();
+      await barrier;
       return 'slow';
     });
     // enqueue mid-flight

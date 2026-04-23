@@ -7,6 +7,7 @@ import { CoreRunner } from './CoreRunner.js';
 import { Logger } from './Logger.js';
 import { parsePlan, Plan, inferFileAction } from './PlanSchema.js';
 import { HumanReporter, NullHumanReporter } from './HumanReporter.js';
+import { LlmStreamNarrator } from './LlmStreamNarrator.js';
 import { PLAN_PROMPT } from './PromptTemplates.js';
 import { stripThinkingBlocks } from './OutputSanitizer.js';
 
@@ -96,8 +97,9 @@ export class Planner {
     const template = await this.loadPromptTemplate();
     await this.logger.append({
       sessionId,
-      type: 'task.completed',
+      type: 'run.command_resolved',
       timestamp: new Date().toISOString(),
+      resolvedCommand: entry.command,
       minLevel: 2,
       message: `[planner] Loaded prompt template`,
     });
@@ -106,14 +108,23 @@ export class Planner {
     const renderedTemplate = this.renderTemplate(template, { CWD: cwd });
     const combinedPrompt = renderedTemplate + input.prompt;
 
-    const result = await this.coreRunner.run({
-      llmCommand: entry.command,
-      prompt: combinedPrompt,
-      sessionId,
-      cwd,
-      env: { ...process.env, ...(entry.env ?? {}) },
-      logger: this.logger,
-    });
+    this.humanReporter.promptSent(combinedPrompt);
+
+    const narrator = new LlmStreamNarrator(this.humanReporter);
+    let result;
+    try {
+      result = await this.coreRunner.run({
+        llmCommand: entry.command,
+        prompt: combinedPrompt,
+        sessionId,
+        cwd,
+        env: { ...process.env, ...(entry.env ?? {}) },
+        logger: this.logger,
+        onStdoutLine: narrator.onLine,
+      });
+    } finally {
+      narrator.close();
+    }
 
     // Extract plan content from result
     const planContent = CoreRunner.extractFinalOutput(result.stdout) || result.stdout;
@@ -154,14 +165,6 @@ export class Planner {
     await fs.writeFile(planFilePath, JSON.stringify(planFile, null, 2) + '\n', 'utf8');
 
     this.humanReporter.step('plan', `Wrote plan file: ${planFilePath}`);
-
-    await this.logger.append({
-      sessionId,
-      type: 'task.completed',
-      timestamp: new Date().toISOString(),
-      minLevel: 2,
-      message: `[planner] Wrote plan file: ${planFilePath}`,
-    });
 
     // Log completion
     await this.logger.append({

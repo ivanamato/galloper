@@ -1,9 +1,12 @@
 // HookDispatcher: lifecycle + event hooks for contract enforcement and side effects
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import picomatch from 'picomatch';
 import { HookFailure } from './TaskRunner.js';
 import { substitute, isPathSafeForShell, type TemplateContext } from './HookTemplate.js';
 import { PathLock } from './PathLock.js';
+import { type HumanReporter, NullHumanReporter } from './HumanReporter.js';
+import { type Logger } from './Logger.js';
 
 /**
  * Thrown by `runPost` when a hook with `onFailure:'abort'` exits non-zero.
@@ -110,11 +113,16 @@ export class HookDispatcher {
   private lifecycleHooks: Map<LifecyclePhase, LifecycleHookConfig[]>;
   private eventHooks: Map<string, EventHookConfig[]>;
   private pathLock: PathLock = new PathLock();
+  private humanReporter: HumanReporter;
+  private inflightEventHooks: Set<Promise<void>> = new Set();
+  private logger?: Logger;
 
-  constructor(hooksConfig?: HooksConfig) {
+  constructor(hooksConfig?: HooksConfig, humanReporter?: HumanReporter, logger?: Logger) {
     this.config = hooksConfig ?? {};
     this.lifecycleHooks = new Map();
     this.eventHooks = new Map();
+    this.humanReporter = humanReporter ?? new NullHumanReporter();
+    this.logger = logger;
 
     // Load lifecycle hooks
     if (this.config.lifecycle) {
@@ -143,13 +151,21 @@ export class HookDispatcher {
       const hook = hooks[i];
       if (!hook) continue;
 
+      const hookInvocationId = randomUUID();
+
       // Skip if file-scoped and glob doesn't match
       if (phase === 'pre-task-file' && ctx.file) {
         if (hook.match) {
           const isMatch = this.matchGlob(ctx.file.path, hook.match);
-          if (!isMatch) continue;
+          if (!isMatch) {
+            await this.emitDecisionEvent(ctx, phase, i, 'skipped-glob', hookInvocationId);
+            continue;
+          }
         }
-        if (hook.action && ctx.file.action !== hook.action) continue;
+        if (hook.action && ctx.file.action !== hook.action) {
+          await this.emitDecisionEvent(ctx, phase, i, 'skipped-action', hookInvocationId);
+          continue;
+        }
       }
 
       // Static instructions
@@ -158,6 +174,7 @@ export class HookDispatcher {
 ${hook.instructions}
 </pre-hook output>`;
         outputs.push(wrapped);
+        this.humanReporter.hookFired({ phase, kind: 'lifecycle', instructionsOnly: true, file: ctx.file });
       }
 
       // Dynamic command
@@ -167,9 +184,17 @@ ${hook.instructions}
           const resolved = this.resolveCommand(hook.command, hook.shell !== false, templateCtx);
           if ('skip' in resolved) {
             console.warn(`Pre-hook skipped for ${phase}[${i}]: ${resolved.reason} (path=${ctx.file?.path ?? ''})`);
+            const cmdStr = typeof hook.command === 'string' ? hook.command : hook.command.join(' ');
+            this.humanReporter.hookFired({ phase, kind: 'lifecycle', skipped: { reason: resolved.reason }, file: ctx.file, command: cmdStr });
+            await this.emitDecisionEvent(ctx, phase, i, 'skipped-glob', hookInvocationId);
             continue;
           }
-          const result = await this.execCommand(resolved.command, ctx, hook.timeoutMs ?? 30000, { shell: resolved.shell });
+          const start = Date.now();
+          const result = await this.execCommand(resolved.command, ctx, hook.timeoutMs ?? 30000, { shell: resolved.shell, hookInvocationId });
+          const durationMs = Date.now() - start;
+          const cmdStr = typeof hook.command === 'string' ? hook.command : hook.command.join(' ');
+          this.humanReporter.hookFired({ phase, kind: 'lifecycle', command: cmdStr, exitCode: 0, stdout: result.stdout, stderr: '', durationMs, file: ctx.file });
+          await this.emitDecisionEvent(ctx, phase, i, 'matched', hookInvocationId);
           if (result.stdout.trim()) {
             const wrapped = `<pre-hook output phase="${phase}" ${ctx.file ? `path="${ctx.file.path}"` : ''}>
 ${result.stdout}
@@ -180,6 +205,9 @@ ${result.stdout}
           // Log but don't fail pre-hooks
           console.warn(`Pre-hook command failed: ${JSON.stringify(hook.command)}`, err);
         }
+      } else {
+        // No command, emit matched decision
+        await this.emitDecisionEvent(ctx, phase, i, 'matched', hookInvocationId);
       }
     }
 
@@ -208,30 +236,48 @@ ${result.stdout}
       const hook = hooks[i];
       if (!hook) continue;
 
+      const hookInvocationId = randomUUID();
+
       // Skip if file-scoped and glob doesn't match
       if (phase === 'post-task-file' && ctx.file) {
         // Surprise-classified paths only trigger hooks that opt in via
         // runOnSurprise. Default (undefined / false) keeps pre-§11 behavior
         // where hooks only run for declared paths.
-        if (ctx.classification === 'surprise' && hook.runOnSurprise !== true) continue;
+        if (ctx.classification === 'surprise' && hook.runOnSurprise !== true) {
+          await this.emitDecisionEvent(ctx, phase, i, 'skipped-surprise', hookInvocationId);
+          continue;
+        }
         if (hook.match) {
           const isMatch = this.matchGlob(ctx.file.path, hook.match);
-          if (!isMatch) continue;
+          if (!isMatch) {
+            await this.emitDecisionEvent(ctx, phase, i, 'skipped-glob', hookInvocationId);
+            continue;
+          }
         }
-        if (hook.action && ctx.file.action !== hook.action) continue;
+        if (hook.action && ctx.file.action !== hook.action) {
+          await this.emitDecisionEvent(ctx, phase, i, 'skipped-action', hookInvocationId);
+          continue;
+        }
       }
 
-      if (!hook.command) continue;
+      if (!hook.command) {
+        // No command, emit matched decision
+        await this.emitDecisionEvent(ctx, phase, i, 'matched', hookInvocationId);
+        continue;
+      }
 
       try {
         const templateCtx = this.buildTemplateCtx(ctx);
         const resolved = this.resolveCommand(hook.command, hook.shell !== false, templateCtx);
         if ('skip' in resolved) {
+          const cmdStr = typeof hook.command === 'string' ? hook.command : hook.command.join(' ');
+          this.humanReporter.hookFired({ phase, kind: 'lifecycle', skipped: { reason: resolved.reason }, file: ctx.file, command: cmdStr });
+          await this.emitDecisionEvent(ctx, phase, i, 'skipped-glob', hookInvocationId);
           failures.push({
             hookId: `${phase}[${i}]`,
             phase,
             file: ctx.file,
-            command: typeof hook.command === 'string' ? hook.command : hook.command.join(' '),
+            command: cmdStr,
             exitCode: null,
             stdout: '',
             stderr: `skipped: ${resolved.reason}`,
@@ -239,15 +285,18 @@ ${result.stdout}
             durationMs: 0,
             onFailure: hook.onFailure ?? 'warn',
             category: 'hook',
+            hookInvocationId,
+            invocationDurationMs: 0,
           });
           continue;
         }
 
-        const { result, attempts } = await this.runWithRetry(hook, ctx, resolved);
+        const { result, attempts, invocationDurationMs } = await this.runWithRetry(hook, ctx, resolved, hookInvocationId);
         const { exitCode, stdout, stderr, timedOut, durationMs } = result;
+        const cmdStr = typeof hook.command === 'string' ? hook.command : hook.command.join(' ');
+        this.humanReporter.hookFired({ phase, kind: 'lifecycle', command: cmdStr, exitCode, stdout, stderr, timedOut, durationMs, file: ctx.file });
 
         if (exitCode !== 0) {
-          const cmdStr = typeof hook.command === 'string' ? hook.command : hook.command.join(' ');
           failures.push({
             hookId: `${phase}[${i}]`,
             phase,
@@ -261,11 +310,15 @@ ${result.stdout}
             onFailure: hook.onFailure ?? 'retry',
             category: 'hook',
             ...(hook.retry ? { hookRetryCount: attempts } : {}),
+            hookInvocationId,
+            invocationDurationMs,
           });
 
           if (hook.onFailure === 'abort') {
             throw new AbortHookError(`Post-hook aborted: ${cmdStr}`, i);
           }
+        } else {
+          await this.emitDecisionEvent(ctx, phase, i, 'matched', hookInvocationId);
         }
       } catch (err) {
         if ((err instanceof Error && err.message.includes('aborted')) || (err instanceof Error && err.message.includes('Abort'))) {
@@ -286,13 +339,47 @@ ${result.stdout}
     // Fire and forget (non-blocking). Event hooks stay string-only (no argv
     // mode, no template substitution) to keep the event payload's env-var
     // contract stable — event hook authors read payload via DEVFLOW_* env.
-    setImmediate(() => {
-      for (const hook of hooks) {
-        if (!hook) continue;
-        this.execCommand(hook.command, { ...ctx, plan: payload }, hook.timeoutMs ?? 10000, { shell: true })
-          .catch((err) => console.warn(`Event hook failed: ${eventType}`, err));
+    // Hooks execute sequentially to preserve order.
+    let resolveHookPromise: (() => void) | undefined;
+    const hookPromise = new Promise<void>((resolve) => {
+      resolveHookPromise = resolve;
+    });
+
+    this.inflightEventHooks.add(hookPromise);
+
+    setImmediate(async () => {
+      try {
+        for (const hook of hooks) {
+          if (!hook) continue;
+          const start = Date.now();
+          try {
+            const result = await this.execCommand(hook.command, { ...ctx, plan: payload }, hook.timeoutMs ?? 10000, { shell: true });
+            const durationMs = Date.now() - start;
+            this.humanReporter.hookFired({
+              phase: eventType,
+              kind: 'event',
+              command: hook.command,
+              exitCode: result.exitCode,
+              stdout: result.stdout,
+              stderr: result.stderr,
+              timedOut: result.timedOut,
+              durationMs,
+            });
+          } catch (err) {
+            console.warn(`Event hook failed: ${eventType}`, err);
+          }
+        }
+      } finally {
+        this.inflightEventHooks.delete(hookPromise);
+        resolveHookPromise?.();
       }
     });
+  }
+
+  async drainEventHooks(): Promise<void> {
+    while (this.inflightEventHooks.size > 0) {
+      await Promise.all(Array.from(this.inflightEventHooks));
+    }
   }
 
   /**
@@ -300,16 +387,19 @@ ${result.stdout}
    * Retry triggers only when: the hook declares `retry`, the last attempt
    * exited non-zero, and `onFailure` is (explicitly or by default) `'retry'`.
    * Between attempts: `backoffMs * 2^(n-1) + rand(-1,1) * backoffMs * jitter`.
-   * Returns the final attempt's result plus the count of attempts made.
+   * Returns the final attempt's result plus the count of attempts made and the
+   * invocation duration of the first/successful attempt.
    */
   private async runWithRetry(
     hook: LifecycleHookConfig,
     ctx: HookContext,
     resolved: { command: string | string[]; shell: boolean },
-  ): Promise<{ result: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; durationMs: number }; attempts: number }> {
+    hookInvocationId: string,
+  ): Promise<{ result: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; durationMs: number }; attempts: number; invocationDurationMs: number }> {
     const maxAttempts = hook.retry?.maxAttempts ?? 1;
     const effectiveOnFailure = hook.onFailure ?? 'retry';
     let attempts = 0;
+    let firstAttemptDurationMs = 0;
     let lastResult: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; durationMs: number } = {
       exitCode: null, stdout: '', stderr: '', timedOut: false, durationMs: 0,
     };
@@ -317,9 +407,13 @@ ${result.stdout}
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       attempts = attempt;
       const start = Date.now();
-      const r = await this.execCommand(resolved.command, ctx, hook.timeoutMs ?? 120000, { shell: resolved.shell });
-      lastResult = { ...r, durationMs: Date.now() - start };
-      if (lastResult.exitCode === 0) return { result: lastResult, attempts };
+      const r = await this.execCommand(resolved.command, ctx, hook.timeoutMs ?? 120000, { shell: resolved.shell, hookInvocationId });
+      const invocationDurationMs = Date.now() - start;
+      if (attempt === 1) {
+        firstAttemptDurationMs = invocationDurationMs;
+      }
+      lastResult = { ...r, durationMs: invocationDurationMs };
+      if (lastResult.exitCode === 0) return { result: lastResult, attempts, invocationDurationMs: firstAttemptDurationMs };
       if (!hook.retry) break;
       if (effectiveOnFailure !== 'retry') break;
       if (attempt >= maxAttempts) break;
@@ -329,7 +423,7 @@ ${result.stdout}
       await new Promise((r) => setTimeout(r, delayMs));
     }
 
-    return { result: lastResult, attempts };
+    return { result: lastResult, attempts, invocationDurationMs: firstAttemptDurationMs };
   }
 
   private matchGlob(filepath: string, pattern: string): boolean {
@@ -339,6 +433,27 @@ ${result.stdout}
     } catch {
       return false;
     }
+  }
+
+  private async emitDecisionEvent(
+    ctx: HookContext,
+    phase: string,
+    hookIndex: number,
+    verdict: 'matched' | 'skipped-glob' | 'skipped-action' | 'skipped-surprise',
+    hookInvocationId: string,
+  ): Promise<void> {
+    if (!this.logger || !ctx.file) return;
+    await this.logger.append({
+      sessionId: ctx.sessionId,
+      timestamp: new Date().toISOString(),
+      type: 'hook.decision',
+      phase,
+      hookIndex,
+      file: ctx.file.path,
+      action: ctx.file.action,
+      verdict,
+      hookInvocationId,
+    });
   }
 
   private buildTemplateCtx(ctx: HookContext): TemplateContext {
@@ -381,7 +496,7 @@ ${result.stdout}
     command: string | string[],
     ctx: HookContext,
     timeoutMs: number,
-    opts: { shell: boolean } = { shell: true },
+    opts: { shell: boolean; hookInvocationId?: string } = { shell: true },
   ): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }> {
     return new Promise((resolve) => {
       let timedOut = false;
@@ -401,6 +516,7 @@ ${result.stdout}
         DEVFLOW_SESSION_ID: ctx.sessionId,
         DEVFLOW_CWD: ctx.cwd,
         ...(ctx.file ? { DEVFLOW_FILE_PATH: ctx.file.path, DEVFLOW_FILE_ACTION: ctx.file.action } : {}),
+        ...(opts.hookInvocationId ? { DEVFLOW_HOOK_INVOCATION_ID: opts.hookInvocationId } : {}),
       };
 
       let proc;

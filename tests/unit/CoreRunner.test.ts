@@ -137,9 +137,6 @@ describe('CoreRunner', () => {
       logger,
     });
 
-    // Wait for async logger.append() calls to complete
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
     const logPath = join(tempDir, 'logs', 'runs.jsonl');
     const events = readJsonlEvents(logPath);
     const stdoutEvents = events.filter((e) => e.type === 'process.stdout');
@@ -157,9 +154,6 @@ describe('CoreRunner', () => {
       env: process.env,
       logger,
     });
-
-    // Wait for async logger.append() calls to complete
-    await new Promise((resolve) => setTimeout(resolve, 50));
 
     const logPath = join(tempDir, 'logs', 'runs.jsonl');
     const events = readJsonlEvents(logPath);

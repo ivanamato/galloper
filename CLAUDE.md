@@ -247,6 +247,7 @@ This flag streams human-friendly messages to **stderr**, showing:
 - Command resolution steps
 - Plan summary (task count + titles)
 - Task completion status
+- Hook firings: phase/event type, command, exit code, duration, and truncated stdout/stderr — including skipped hooks and instructions-only pre-hooks
 - Final completion summary
 
 The `--human-friendly` flag is **independent** from `-v/-vv/-vvv` debug flags and can be combined with them. Both output to stderr while stdout remains reserved for the JSON result.

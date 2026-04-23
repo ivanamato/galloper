@@ -3,6 +3,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { parsePlan, topoSort, readyTasks, descendantsOf, Plan, PlanTask, RetryPolicy } from './PlanSchema.js';
 import { Executioner } from './Executioner.js';
 import { CoreRunner } from './CoreRunner.js';
@@ -12,8 +13,9 @@ import { HookDispatcher, AbortHookError, type HooksConfig } from './HookDispatch
 import { WorkerPool } from './WorkerPool.js';
 import { WriteLock } from './WriteLock.js';
 import type { CommandResolver } from './CommandResolver.js';
-import { captureBaseline, reconcile, classify, revertToBaseline, type Baseline } from './WorkspaceReconciler.js';
+import { captureBaseline, reconcile, classify, classifyAcrossRoots, revertToBaseline, captureBaselines, reconcileAll, type Baseline, type WorkspaceRoot, type ReconciledPath } from './WorkspaceReconciler.js';
 import type { TaskManifest } from './SessionManager.js';
+import { FileWatcher } from './FileWatcher.js';
 
 export interface TaskRunnerInput {
   planFilePath: string;
@@ -36,6 +38,11 @@ export interface TaskRunnerInput {
    * for strict sequential behavior equivalent to pre-Step-6.
    */
   concurrency?: number;
+  /**
+   * Workspace roots to track (Step 3C). If absent, falls back to a synthetic
+   * single root at `{ path: cwd, vcs: 'git', label: 'main' }`.
+   */
+  workspaceRoots?: WorkspaceRoot[];
 }
 
 export interface FileSpec {
@@ -61,6 +68,16 @@ export interface HookFailure {
    * retry, and for categories other than 'hook'.
    */
   hookRetryCount?: number;
+  /**
+   * Unique invocation ID for this hook execution (§Step 7). Propagated as
+   * DEVFLOW_HOOK_INVOCATION_ID to the hook's environment.
+   */
+  hookInvocationId?: string;
+  /**
+   * Duration in milliseconds of the hook invocation (execCommand call).
+   * Distinct from durationMs which may include retry attempt timing.
+   */
+  invocationDurationMs?: number;
 }
 
 export interface Attempt {
@@ -111,7 +128,7 @@ export class TaskRunner {
 
     // Fire pre-plan hook (early hook that fires once per plan)
     // Note: we create hookDispatcher early so pre-plan can run before manifest initialization
-    const hookDispatcher = new HookDispatcher(input.hooksConfig);
+    const hookDispatcher = new HookDispatcher(input.hooksConfig, input.humanReporter ?? new NullHumanReporter(), input.logger);
     try {
       const prePlanOutput = await hookDispatcher.runPre('pre-plan', {
         plan: { prompt: plan.prompt },
@@ -212,6 +229,35 @@ export class TaskRunner {
       taskState.status = 'running';
       taskState.startedAt = new Date().toISOString();
 
+      // Capture workspace baselines for all configured roots (Step 3C).
+      // Falls back to synthetic single root at cwd if workspaceRoots not provided.
+      const rootsToTrack = input.workspaceRoots ?? [
+        { path: input.cwd, vcs: 'git' as const, label: 'main' },
+      ];
+      const baselines = await captureBaselines(rootsToTrack);
+      for (const rb of baselines) {
+        if (rb.baseline) {
+          await input.logger.append({
+            sessionId,
+            type: 'workspace.baseline.captured',
+            timestamp: new Date().toISOString(),
+            taskId: task.id,
+            root: rb.path,
+            label: rb.label,
+            vcs: rb.vcs,
+            ref: rb.baseline.head,
+          });
+        }
+      }
+
+      // Start FileWatcher to detect background activity (Step 4)
+      const fileWatcher = new FileWatcher();
+      try {
+        await fileWatcher.start(rootsToTrack, {});
+      } catch (error) {
+        console.warn('FileWatcher startup warning:', error);
+      }
+
       try {
         // Fire pre-task hook
         const preTaskOutput = await hookDispatcher.runPre('pre-task', {
@@ -233,25 +279,47 @@ export class TaskRunner {
         console.warn(`Pre-task hook failed for ${task.id}:`, error);
       }
 
-      // Capture workspace baseline (single root = task cwd, git-only for Step 1).
-      // On non-git cwd, log+skip and leave manifest empty — reconciliation is
-      // a no-op in that case. Non-git roots arrive in Step 4 with the watcher.
-      let baseline: Baseline | null = null;
+      // Quiesce gate (Step 4): wait for workspace to be quiet before proceeding
+      // Use hardcoded defaults: quiesceMs=250, quiesceTimeoutMs=5000
+      const quiesceMs = 250;
+      const quiesceTimeoutMs = 5000;
+
       try {
-        baseline = await captureBaseline(input.cwd);
-        await input.logger.append({
-          sessionId,
-          type: 'workspace.baseline.captured',
-          timestamp: new Date().toISOString(),
-          taskId: task.id,
-          root: input.cwd,
-          vcs: 'git',
-          ref: baseline.head,
-        });
+        // Wait for each root to be idle
+        for (const root of rootsToTrack) {
+          try {
+            await fileWatcher.waitForIdle(root.label, quiesceMs, quiesceTimeoutMs);
+          } catch (quiesceError) {
+            // Quiesce failed - emit workspace.noisy and abort task
+            const watcherEvents = await fileWatcher.stop();
+            const sampleEvents = watcherEvents[root.label] ?? [];
+            await input.logger.append({
+              sessionId,
+              type: 'workspace.noisy',
+              timestamp: new Date().toISOString(),
+              taskId: task.id,
+              root: root.path,
+              label: root.label,
+              quiesceMs,
+              quiesceTimeoutMs,
+              sampleEventCount: sampleEvents.length,
+            });
+            taskState.status = 'aborted';
+            taskState.endedAt = new Date().toISOString();
+            await manifestWriteLock.acquire(async () => {
+              manifest.endedAt = new Date().toISOString();
+              manifest.status = 'aborted';
+              await fs.mkdir(path.dirname(input.runManifestPath), { recursive: true });
+              await fs.writeFile(input.runManifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+            });
+            throw new Error(`Task ${task.id} aborted: workspace too noisy. Unable to achieve quiescence of ${quiesceMs}ms within ${quiesceTimeoutMs}ms timeout`);
+          }
+        }
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        console.warn(`Baseline capture failed for ${task.id}: ${msg}`);
-        baseline = null;
+        if (error instanceof Error && error.message.includes('aborted')) {
+          throw error;
+        }
+        console.warn(`Quiesce gate error for ${task.id}:`, error);
       }
 
       // Retry loop
@@ -385,76 +453,310 @@ export class TaskRunner {
             });
           }
 
-          // Reconcile the workspace against the pre-task baseline and classify
-          // every net-changed path as declared|surprise|churn. Hooks then fire
-          // on the RECONCILED set, not the declared manifest — closing the
-          // §11 trust boundary. Falls back to the declared manifest only when
-          // baseline capture failed (non-git cwd in Step 1).
-          const classified: { declared: { path: string; action: 'create' | 'edit' | 'delete' }[]; surprise: { path: string; action: 'create' | 'edit' | 'delete' }[]; churn: { path: string; action: 'create' | 'edit' | 'delete' }[] } = baseline
-            ? classify(await reconcile(input.cwd, baseline), task.files, [])
-            : { declared: task.files.map((f) => ({ path: f.path, action: f.action })), surprise: [], churn: [] };
+          // Stop FileWatcher after executioner and collect its event set (Step 4)
+          // Give chokidar time to emit events with awaitWriteFinish
+          await new Promise(resolve => setTimeout(resolve, 150));
+          // This captures all file system activity during task execution
+          const watcherEvents = await fileWatcher.stop();
 
-          for (const p of classified.declared) {
+          // Reconcile all roots (Step 3C): for each root with a baseline, classify
+          // net-changed paths as declared|surprise|churn. Hooks fire on the
+          // RECONCILED set per root, closing the trust boundary. Falls back to
+          // the declared manifest only when baseline capture failed.
+          const reconciledByRoot = await reconcileAll(baselines);
+
+          // Compute churn from watcher data (Step 4):
+          // A path is churn if it was seen by the watcher but NOT in reconciliation (net-zero change on disk).
+          // Churn is distinguished from surprise (new gitignored files) by checking baseline:
+          //   - If path was in baseline: file existed, was modified, and reverted → churn
+          //   - If path was NOT in baseline AND watcher action is 'deleted': file was created then deleted → churn
+          //   - If path was NOT in baseline AND watcher action is NOT 'deleted': new undeclared file → surprise (handled by classify)
+          // For each root, build watcher → reconciled classification.
+          const churnSet: Record<string, Set<string>> = {};
+          const droppedByRoot: Record<string, ReconciledPath[]> = {};
+          const watcherMap: Record<string, Map<string, string>> = {}; // path -> final action
+
+          for (const rootBaseline of baselines) {
+            const root = rootsToTrack.find((r) => r.label === rootBaseline.label);
+            if (!root) continue;
+
+            // Build a map of watcher events by path to check final action
+            const watcherByPath = new Map<string, 'created' | 'modified' | 'deleted'>();
+            for (const evt of watcherEvents[root.label] || []) {
+              watcherByPath.set(evt.path, evt.action);
+            }
+            watcherMap[root.label] = watcherByPath;
+
+            const baselineEntries = rootBaseline.baseline?.entries ?? {};
+            const reconciledPaths = (reconciledByRoot[root.label] || []).map((e) => e.path);
+            const reconciledSet = new Set(reconciledPaths);
+
+            // Churn: in watcher only, AND either:
+            //   1. action is 'deleted' (created then deleted, net-zero)
+            //   2. action is 'modified' AND path exists in git HEAD (modified then reverted)
+            const churnInRoot: string[] = [];
+            for (const [p, action] of watcherByPath) {
+              if (reconciledSet.has(p)) continue; // Not churn if reconcile sees it
+
+              if (action === 'deleted') {
+                // Deleted files are always churn (net-zero on disk)
+                churnInRoot.push(p);
+              } else if (action === 'modified') {
+                // Check if this file exists in git HEAD (was committed)
+                // If it does, it was modified then reverted = churn
+                // If not, it's a surprise (gitignored or similar)
+                try {
+                  execFileSync('git', ['show', `HEAD:${p}`], { cwd: root.path, stdio: 'pipe' });
+                  // File exists in HEAD, so it was modified and reverted
+                  churnInRoot.push(p);
+                } catch (error) {
+                  // File doesn't exist in HEAD, so it's a surprise (new file)
+                }
+              }
+              // Note: 'created' action with path not in baseline = new file, will be classified as surprise by classify()
+            }
+            churnSet[root.label] = new Set(churnInRoot);
+
+            // Dropped: in reconcile only (detected as change but watcher missed it)
+            const droppedInRoot: ReconciledPath[] = [];
+            for (const p of reconciledByRoot[root.label] || []) {
+              if (!watcherByPath.has(p.path)) {
+                droppedInRoot.push(p);
+              }
+            }
+            droppedByRoot[root.label] = droppedInRoot;
+          }
+
+          // Emit workspace.watcher.dropped events for paths reconcile found but watcher missed
+          for (const root of rootsToTrack) {
+            for (const p of droppedByRoot[root.label] || []) {
+              await input.logger.append({
+                sessionId,
+                type: 'workspace.watcher.dropped',
+                timestamp: new Date().toISOString(),
+                taskId: task.id,
+                root: root.path,
+                label: root.label,
+                path: p.path,
+                action: p.action,
+              });
+            }
+          }
+
+          // Emit task.file.churn events for watcher-detected churn
+          for (const root of rootsToTrack) {
+            for (const p of churnSet[root.label] || []) {
+              const action = watcherMap[root.label]?.get(p) || 'delete';
+              await input.logger.append({
+                sessionId,
+                type: 'task.file.churn',
+                timestamp: new Date().toISOString(),
+                taskId: task.id,
+                root: root.path,
+                label: root.label,
+                path: p,
+                action,
+              });
+            }
+          }
+
+          // Flatten churn into a single set and add watcher-only (non-churn) paths to reconciled for classification
+          const watcherChurn: ReconciledPath[] = [];
+          const reconcileWithWatcher: Record<string, ReconciledPath[]> = {};
+
+          for (const root of rootsToTrack) {
+            const churnInRoot = churnSet[root.label] || new Set<string>();
+            const watcherInRoot = watcherMap[root.label] || new Map<string, string>();
+            const reconciledInRoot = reconciledByRoot[root.label] || [];
+            const reconciledSet = new Set(reconciledInRoot.map((r) => r.path));
+
+            // Build the enhanced reconciled set that includes watcher-only paths
+            const enhanced = [...reconciledInRoot];
+
+            // For watcher-only paths that are NOT churn (new files like gitignored), add them to reconciled
+            for (const [p, action] of watcherInRoot) {
+              if (!reconciledSet.has(p) && !churnInRoot.has(p)) {
+                // Watcher saw this, reconcile didn't, and it's not churn → add as a path for classification
+                enhanced.push({ path: p, action: action as 'create' | 'edit' | 'delete' });
+              }
+            }
+
+            reconcileWithWatcher[root.label] = enhanced;
+
+            // Add churn paths to the churn set (use the actual watcher action)
+            for (const p of churnInRoot) {
+              const action = watcherInRoot.get(p) || 'delete';
+              watcherChurn.push({ path: p, action: action as 'create' | 'edit' | 'delete' });
+            }
+          }
+
+          // Classify across roots to detect out-of-workspace paths (Step 3D)
+          // Now with watcher-based churn to authoritatively classify net-zero writes,
+          // and watcher-only paths included for classification as surprise
+          const classified = classifyAcrossRoots(reconcileWithWatcher, task.files, rootsToTrack, watcherChurn);
+
+          // Check for out-of-workspace writes before post-task-file hooks
+          if (classified.outOfWorkspace.length > 0) {
+            // Emit events for each out-of-workspace path
+            for (const p of classified.outOfWorkspace) {
+              await input.logger.append({
+                sessionId,
+                type: 'task.file.out-of-workspace',
+                timestamp: new Date().toISOString(),
+                taskId: task.id,
+                path: p.path,
+                action: p.action,
+              });
+            }
+
+            // Add synthetic HookFailure to abort the task
+            attemptRecord.hookFailures.push({
+              hookId: 'out-of-workspace',
+              command: 'workspace-boundary-check',
+              exitCode: 1,
+              stdout: '',
+              stderr: `Out-of-workspace writes detected: ${classified.outOfWorkspace.map((p) => p.path).join(', ')}`,
+              timedOut: false,
+              durationMs: 0,
+              onFailure: 'abort',
+              category: 'hook',
+            });
+
+            // Set status to aborted and skip post-task-file hooks
+            attemptRecord.status = 'aborted';
+            attemptRecord.endedAt = new Date().toISOString();
+            taskState.attempts.push(attemptRecord);
+            taskState.status = 'aborted';
+
+            // Fire post-task hook with enriched payload containing failure info
+            try {
+              const postTaskFailures = await hookDispatcher.runPost('post-task', {
+                plan,
+                task,
+                sessionId,
+                cwd: input.cwd,
+                previousFailures: attemptRecord.hookFailures,
+              });
+              if (postTaskFailures.length > 0) {
+                await input.logger.append({
+                  sessionId,
+                  type: 'hook.post-task.failed',
+                  timestamp: new Date().toISOString(),
+                  taskId: task.id,
+                  failures: postTaskFailures,
+                });
+              }
+            } catch (error) {
+              if (error instanceof Error && (error.message.includes('aborted') || error.message.includes('Abort'))) {
+                console.warn(`Post-task hook aborted for ${task.id}:`, error);
+              } else {
+                console.warn(`Post-task hook failed for ${task.id}:`, error);
+              }
+            }
+
+            taskState.endedAt = new Date().toISOString();
+
+            // Write manifest after aborting
+            await manifestWriteLock.acquire(async () => {
+              await fs.mkdir(path.dirname(input.runManifestPath), { recursive: true });
+              await fs.writeFile(input.runManifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+            });
+
+            // Skip post-task-file hooks and continue to next task
+            continue;
+          }
+
+          // Build per-root manifest for reporting (back-compat with Step 3C)
+          const perRootManifest: Record<string, { declared: { path: string; action: 'create' | 'edit' | 'delete' }[]; surprise: { path: string; action: 'create' | 'edit' | 'delete' }[]; churn: { path: string; action: 'create' | 'edit' | 'delete' }[] }> = {};
+          for (const rb of baselines) {
+            // Extract per-root data from the global classified result
+            // Use the enhanced reconciled set (reconcileWithWatcher) which includes watcher-only paths
+            const enhanced = reconcileWithWatcher[rb.label] ?? [];
+            perRootManifest[rb.label] = {
+              declared: classified.declared.filter((p) =>
+                enhanced.some((r) => r.path === p.path),
+              ),
+              surprise: classified.surprise.filter((p) =>
+                enhanced.some((r) => r.path === p.path),
+              ),
+              churn: classified.churn.filter((p) =>
+                enhanced.some((r) => r.path === p.path),
+              ),
+            };
+          }
+
+          // Log events per-root
+          for (const rb of baselines) {
+            const perRoot = perRootManifest[rb.label] || { declared: [], surprise: [] };
+
+            for (const p of perRoot.declared) {
+              await input.logger.append({
+                sessionId,
+                type: 'task.file.declared',
+                timestamp: new Date().toISOString(),
+                taskId: task.id,
+                root: rb.path,
+                label: rb.label,
+                path: p.path,
+                action: p.action,
+                via: 'reconcile',
+              });
+            }
+            for (const p of perRoot.surprise) {
+              await input.logger.append({
+                sessionId,
+                type: 'task.file.surprise',
+                timestamp: new Date().toISOString(),
+                taskId: task.id,
+                root: rb.path,
+                label: rb.label,
+                path: p.path,
+                action: p.action,
+                via: 'reconcile',
+              });
+            }
+
+            // Log workspace.reconciled summary per root
+            const reconciled = reconciledByRoot[rb.label] ?? [];
+            const churn = classified.churn.filter((p) => reconciled.some((r) => r.path === p.path));
             await input.logger.append({
               sessionId,
-              type: 'task.file.declared',
+              type: 'workspace.reconciled',
               timestamp: new Date().toISOString(),
               taskId: task.id,
-              root: input.cwd,
-              path: p.path,
-              action: p.action,
-              via: 'reconcile',
+              root: rb.path,
+              label: rb.label,
+              declared: perRoot.declared.length,
+              surprise: perRoot.surprise.length,
+              churn: churn.length,
             });
           }
-          for (const p of classified.surprise) {
-            await input.logger.append({
-              sessionId,
-              type: 'task.file.surprise',
-              timestamp: new Date().toISOString(),
-              taskId: task.id,
-              root: input.cwd,
-              path: p.path,
-              action: p.action,
-              via: 'reconcile',
-            });
-          }
-          for (const p of classified.churn) {
-            await input.logger.append({
-              sessionId,
-              type: 'task.file.churn',
-              timestamp: new Date().toISOString(),
-              taskId: task.id,
-              root: input.cwd,
-              path: p.path,
-              action: p.action,
-            });
-          }
-          await input.logger.append({
-            sessionId,
-            type: 'workspace.reconciled',
-            timestamp: new Date().toISOString(),
-            taskId: task.id,
-            root: input.cwd,
-            declared: classified.declared.length,
-            surprise: classified.surprise.length,
-            churn: classified.churn.length,
-          });
+
+          // Compute union of all roots for top-level manifest (back-compat)
+          const allDeclared: { path: string; action: 'create' | 'edit' | 'delete' }[] = [];
+          const allSurprise: { path: string; action: 'create' | 'edit' | 'delete' }[] = [];
+          const allChurn: { path: string; action: 'create' | 'edit' | 'delete' }[] = [];
+
+          allDeclared.push(...classified.declared);
+          allSurprise.push(...classified.surprise);
+          allChurn.push(...classified.churn);
 
           manifest.taskManifests[task.id] = {
-            declared: classified.declared,
-            surprise: classified.surprise,
-            churn: classified.churn,
+            declared: allDeclared,
+            surprise: allSurprise,
+            churn: allChurn,
+            perRoot: perRootManifest,
           };
 
-          // Fire post-task-file hooks for declared ∪ surprise paths. Dispatch
-          // fans out across files via WorkerPool (concurrency N); per-file
+          // Fire post-task-file hooks for declared ∪ surprise paths from all roots.
+          // Dispatch fans out across files via WorkerPool (concurrency N); per-file
           // serialization of matching hooks is guaranteed by the PathLock
           // inside HookDispatcher.runPost. Failure ordering is restored to
           // dispatchSet order after Promise.all so concurrency=1 is
           // behaviorally identical to the pre-Step-6 sequential loop.
           const dispatchSet: { file: { path: string; action: 'create' | 'edit' | 'delete' }; classification: 'declared' | 'surprise' }[] = [
-            ...classified.declared.map((f) => ({ file: { path: f.path, action: f.action }, classification: 'declared' as const })),
-            ...classified.surprise.map((f) => ({ file: { path: f.path, action: f.action }, classification: 'surprise' as const })),
+            ...allDeclared.map((f) => ({ file: { path: f.path, action: f.action }, classification: 'declared' as const })),
+            ...allSurprise.map((f) => ({ file: { path: f.path, action: f.action }, classification: 'surprise' as const })),
           ];
           const pool = new WorkerPool<{ index: number; failures: HookFailure[]; abortError?: Error; abortHookIndex?: number }>(Math.max(1, concurrency));
           let abortError: Error | null = null;
@@ -496,21 +798,27 @@ export class TaskRunner {
           }
           if (abortError) {
             // Before propagating, consult the aborting hook's onAbort policy.
-            // If `revert` AND we have a usable baseline, restore the workspace
+            // If `revert` AND we have usable baselines, restore all roots
             // so partial task writes don't leak into the tree. Revert errors
             // are logged but do not mask the original abort.
             const postHooks = input.hooksConfig?.lifecycle?.['post-task-file'] ?? [];
             const abortingHook = abortHookIndex !== undefined ? postHooks[abortHookIndex] : undefined;
-            if (abortingHook?.onAbort === 'revert' && baseline != null) {
-              const revertRes = await revertToBaseline(input.cwd, baseline);
-              await input.logger.append({
-                sessionId,
-                type: 'workspace.reverted',
-                timestamp: new Date().toISOString(),
-                taskId: task.id,
-                reverted: revertRes.reverted,
-                ...(revertRes.reason ? { reason: revertRes.reason } : {}),
-              });
+            if (abortingHook?.onAbort === 'revert') {
+              for (const rb of baselines) {
+                if (rb.baseline != null) {
+                  const revertRes = await revertToBaseline(rb.path, rb.baseline);
+                  await input.logger.append({
+                    sessionId,
+                    type: 'workspace.reverted',
+                    timestamp: new Date().toISOString(),
+                    taskId: task.id,
+                    root: rb.path,
+                    label: rb.label,
+                    reverted: revertRes.reverted,
+                    ...(revertRes.reason ? { reason: revertRes.reason } : {}),
+                  });
+                }
+              }
             }
             throw abortError;
           }

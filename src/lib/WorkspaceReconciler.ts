@@ -1,8 +1,16 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { join, resolve, sep } from 'node:path';
 import picomatch from 'picomatch';
 
 const execFileAsync = promisify(execFile);
+
+export interface WorkspaceRoot {
+  path: string;
+  vcs: 'git' | 'none';
+  label: string;
+  ignore?: string[];
+}
 
 /**
  * A baseline snapshot of a git working tree.
@@ -25,6 +33,15 @@ export interface Baseline {
   stashSha?: string;
 }
 
+export interface RootBaseline {
+  label: string;
+  path: string;
+  vcs: 'git' | 'none';
+  baseline: Baseline | null;
+}
+
+export type MultiBaseline = RootBaseline[];
+
 export interface ReconciledPath {
   path: string;
   action: 'create' | 'edit' | 'delete';
@@ -39,6 +56,7 @@ export interface Classified {
   declared: ReconciledPath[];
   surprise: ReconciledPath[];
   churn: ReconciledPath[];
+  outOfWorkspace: ReconciledPath[];
 }
 
 async function runGit(cwd: string, args: string[]): Promise<{ stdout: string }> {
@@ -277,5 +295,102 @@ export function classify(
     else surpriseOut.push(r);
   }
 
-  return { declared: declaredOut, surprise: surpriseOut, churn };
+  return { declared: declaredOut, surprise: surpriseOut, churn, outOfWorkspace: [] };
+}
+
+/**
+ * Capture baselines for multiple workspace roots.
+ * For each root:
+ *   - If vcs='git', capture the baseline
+ *   - If vcs='none', return baseline=null (logged but no throw)
+ * Returns an array of RootBaseline with one entry per input root.
+ */
+export async function captureBaselines(roots: WorkspaceRoot[]): Promise<MultiBaseline> {
+  const results: RootBaseline[] = [];
+  for (const root of roots) {
+    let baseline: Baseline | null = null;
+    if (root.vcs === 'git') {
+      try {
+        baseline = await captureBaseline(root.path);
+      } catch (err) {
+        // Log but don't throw; allow non-git roots to proceed
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`WorkspaceReconciler: failed to capture baseline for root '${root.label}': ${msg}`);
+      }
+    }
+    results.push({
+      label: root.label,
+      path: root.path,
+      vcs: root.vcs,
+      baseline,
+    });
+  }
+  return results;
+}
+
+/**
+ * Reconcile all roots in a MultiBaseline.
+ * For each root with a non-null baseline, call reconcile() and collect results.
+ * Returns a map keyed by root label, with value being the reconciled paths for that root.
+ */
+export async function reconcileAll(multi: MultiBaseline): Promise<Record<string, ReconciledPath[]>> {
+  const results: Record<string, ReconciledPath[]> = {};
+  for (const root of multi) {
+    if (root.baseline === null) {
+      results[root.label] = [];
+      continue;
+    }
+    try {
+      results[root.label] = await reconcile(root.path, root.baseline);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`WorkspaceReconciler: failed to reconcile root '${root.label}': ${msg}`);
+      results[root.label] = [];
+    }
+  }
+  return results;
+}
+
+/**
+ * Classify reconciled paths across multiple workspace roots.
+ * For each root, classifies its reconciled paths as declared/surprise.
+ * Detects paths that escape their root (e.g., via ..) and puts them in outOfWorkspace.
+ */
+export function classifyAcrossRoots(
+  perRootReconciled: Record<string, ReconciledPath[]>,
+  declared: ClassifyInput[],
+  rootPaths: WorkspaceRoot[],
+  churn: ReconciledPath[],
+): Classified {
+  const resultDeclared: ReconciledPath[] = [];
+  const resultSurprise: ReconciledPath[] = [];
+  const resultOutOfWorkspace: ReconciledPath[] = [];
+
+  for (const root of rootPaths) {
+    const reconciled = perRootReconciled[root.label] || [];
+    const rootResolved = resolve(root.path);
+
+    const inWorkspace: ReconciledPath[] = [];
+    for (const path of reconciled) {
+      const absolutePath = resolve(join(rootResolved, path.path));
+      const isUnderRoot = absolutePath === rootResolved || absolutePath.startsWith(rootResolved + sep);
+
+      if (isUnderRoot) {
+        inWorkspace.push(path);
+      } else {
+        resultOutOfWorkspace.push(path);
+      }
+    }
+
+    const classified = classify(inWorkspace, declared, churn);
+    resultDeclared.push(...classified.declared);
+    resultSurprise.push(...classified.surprise);
+  }
+
+  return {
+    declared: resultDeclared,
+    surprise: resultSurprise,
+    churn,
+    outOfWorkspace: resultOutOfWorkspace,
+  };
 }

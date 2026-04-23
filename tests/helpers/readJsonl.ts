@@ -25,16 +25,3 @@ export function readJsonlEvents(filePath: string): LogEvent[] {
     })
     .filter((event): event is LogEvent => event !== null);
 }
-
-export async function waitForFile(
-  filePath: string,
-  timeoutMs: number = 5000
-): Promise<void> {
-  const startTime = Date.now();
-  while (!existsSync(filePath)) {
-    if (Date.now() - startTime > timeoutMs) {
-      throw new Error(`File not found after ${timeoutMs}ms: ${filePath}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}

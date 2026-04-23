@@ -11,6 +11,7 @@ import { TaskRunner } from './TaskRunner.js';
 import { HookDispatcher } from './HookDispatcher.js';
 import { VerbosityLevel } from './Verbosity.js';
 import { HumanReporter, NullHumanReporter } from './HumanReporter.js';
+import { LlmStreamNarrator } from './LlmStreamNarrator.js';
 
 export type SubcommandName = 'single-prompt' | 'plan' | 'implement' | 'pipeline';
 
@@ -150,7 +151,7 @@ export class Orchestrator {
 
     try {
       const hooksConfig = this.configManager.getHooks();
-      const hookDispatcher = new HookDispatcher(hooksConfig);
+      const hookDispatcher = new HookDispatcher(hooksConfig, this.humanReporter);
       this.subscribeEventHooks(hookDispatcher, hooksConfig, sessionId, this.rootDir);
 
       const commandName = this.commandResolver.resolve('single-prompt');
@@ -167,14 +168,23 @@ export class Orchestrator {
         message: `[single-prompt] Command resolved: ${commandName}`,
       });
 
-      const result = await this.coreRunner.run({
-        llmCommand: resolvedCommand,
-        prompt: input.prompt,
-        sessionId,
-        cwd: this.rootDir,
-        env: { ...input.env, ...(entry.env ?? {}) },
-        logger: this.logger,
-      });
+      this.humanReporter.promptSent(input.prompt);
+
+      const narrator = new LlmStreamNarrator(this.humanReporter);
+      let result;
+      try {
+        result = await this.coreRunner.run({
+          llmCommand: resolvedCommand,
+          prompt: input.prompt,
+          sessionId,
+          cwd: this.rootDir,
+          env: { ...input.env, ...(entry.env ?? {}) },
+          logger: this.logger,
+          onStdoutLine: narrator.onLine,
+        });
+      } finally {
+        narrator.close();
+      }
 
       const sessionRecord: SessionRecord = {
         id: sessionId,
@@ -254,7 +264,7 @@ export class Orchestrator {
 
     try {
       const hooksConfig = this.configManager.getHooks();
-      const hookDispatcher = new HookDispatcher(hooksConfig);
+      const hookDispatcher = new HookDispatcher(hooksConfig, this.humanReporter);
       this.subscribeEventHooks(hookDispatcher, hooksConfig, sessionId, cwd);
 
       const commandName = this.commandResolver.resolve('plan');
@@ -315,7 +325,7 @@ export class Orchestrator {
     try {
       // Load the plan from the provided file
       const hooksConfig = this.configManager.getHooks();
-      const hookDispatcher = new HookDispatcher(hooksConfig);
+      const hookDispatcher = new HookDispatcher(hooksConfig, this.humanReporter);
       this.subscribeEventHooks(hookDispatcher, hooksConfig, sessionId, cwd);
       const runManifestPath = `${input.planFile}.manifest.json`;
 
@@ -334,6 +344,7 @@ export class Orchestrator {
         hooksConfig,
         sessionId,
         concurrency: input.concurrency,
+        workspaceRoots: this.configManager.getWorkspace()?.roots,
       });
 
       const durationMs = Date.now() - new Date(startedAt).getTime();
@@ -397,7 +408,7 @@ export class Orchestrator {
     try {
       // Setup hooks for plan-level lifecycle
       const hooksConfig = this.configManager.getHooks();
-      const hookDispatcher = new HookDispatcher(hooksConfig);
+      const hookDispatcher = new HookDispatcher(hooksConfig, this.humanReporter);
       this.subscribeEventHooks(hookDispatcher, hooksConfig, sessionId, cwd);
 
       // Fire pre-plan hook
@@ -476,6 +487,7 @@ export class Orchestrator {
         hooksConfig,
         sessionId,
         concurrency: input.concurrency,
+        workspaceRoots: this.configManager.getWorkspace()?.roots,
       });
 
       const durationMs = Date.now() - new Date(startedAt).getTime();

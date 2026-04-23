@@ -82,11 +82,6 @@
           "command": "npm run build 2>&1 | tail -30",
           "timeoutMs": 60000,
           "onFailure": "warn"
-        },
-        {
-          "command": "npm run test:unit -- --reporter=basic 2>&1 | tail -20",
-          "timeoutMs": 120000,
-          "onFailure": "warn"
         }
       ],
       "pre-task-file": [

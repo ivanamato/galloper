@@ -1,0 +1,59 @@
+{
+  "default": "mock-success",
+  "defaultPlanner": "mock-json",
+  "defaultExecutioner": "mock-implement",
+  "commands": {
+    "mock-success": {
+      "command": "bash tests/fixtures/mock-commands/echo-success.sh",
+      "allowedSubcommands": [],
+      "disallowedSubcommands": []
+    },
+    "mock-json": {
+      "command": "bash tests/fixtures/mock-commands/echo-json.sh",
+      "allowedSubcommands": ["plan"],
+      "disallowedSubcommands": []
+    },
+    "mock-implement": {
+      "command": "bash tests/fixtures/mock-commands/echo-success.sh",
+      "allowedSubcommands": ["implement"],
+      "disallowedSubcommands": []
+    }
+  },
+  "hooks": {
+    "lifecycle": {
+      "pre-task-file": [
+        {
+          "match": "src/**/*.ts",
+          "action": "create",
+          "command": "echo 'pre-task-file: create src/**/*.ts'"
+        },
+        {
+          "match": "src/**/*.ts",
+          "action": "edit",
+          "command": "echo 'pre-task-file: edit src/**/*.ts'"
+        },
+        {
+          "match": "tests/**/*.test.ts",
+          "command": "echo 'pre-task-file: tests/**/*.test.ts'"
+        }
+      ],
+      "post-task-file": [
+        {
+          "match": "src/**/*.ts",
+          "action": "edit",
+          "command": "echo 'post-task-file: edit src/**/*.ts'",
+          "onFailure": "warn"
+        },
+        {
+          "match": "*.md",
+          "command": "echo 'post-task-file: *.md'"
+        },
+        {
+          "match": "tests/**/*.test.ts",
+          "command": "echo 'post-task-file: tests/**/*.test.ts'",
+          "runOnSurprise": true
+        }
+      ]
+    }
+  }
+}

@@ -6,6 +6,7 @@ import { ConfigManager } from './ConfigManager.js';
 import { CoreRunner } from './CoreRunner.js';
 import { Logger } from './Logger.js';
 import { HumanReporter, NullHumanReporter } from './HumanReporter.js';
+import { LlmStreamNarrator } from './LlmStreamNarrator.js';
 import { IMPLEMENT_PROMPT } from './PromptTemplates.js';
 
 export interface ExecutionerInput {
@@ -95,8 +96,9 @@ export class Executioner {
 
     await this.logger.append({
       sessionId,
-      type: 'task.completed',
+      type: 'run.command_resolved',
       timestamp: new Date().toISOString(),
+      resolvedCommand: entry.command,
       minLevel: 2,
       message: `[executioner] Loaded prompt template`,
     });
@@ -105,14 +107,23 @@ export class Executioner {
     const renderedTemplate = this.renderTemplate(template, { CWD: cwd });
     const combinedPrompt = renderedTemplate + input.prompt;
 
-    const result = await this.coreRunner.run({
-      llmCommand: entry.command,
-      prompt: combinedPrompt,
-      sessionId,
-      cwd,
-      env: { ...process.env, ...(entry.env ?? {}) },
-      logger: this.logger,
-    });
+    this.humanReporter.promptSent(combinedPrompt);
+
+    const narrator = new LlmStreamNarrator(this.humanReporter);
+    let result;
+    try {
+      result = await this.coreRunner.run({
+        llmCommand: entry.command,
+        prompt: combinedPrompt,
+        sessionId,
+        cwd,
+        env: { ...process.env, ...(entry.env ?? {}) },
+        logger: this.logger,
+        onStdoutLine: narrator.onLine,
+      });
+    } finally {
+      narrator.close();
+    }
 
     // Extract execution content from result
     const executionContent = CoreRunner.extractFinalOutput(result.stdout) || result.stdout;
@@ -132,14 +143,6 @@ export class Executioner {
     await fs.writeFile(executionFilePath, JSON.stringify(executionFile, null, 2) + '\n', 'utf8');
 
     this.humanReporter.step('implement', `Wrote execution file: ${executionFilePath}`);
-
-    await this.logger.append({
-      sessionId,
-      type: 'task.completed',
-      timestamp: new Date().toISOString(),
-      minLevel: 2,
-      message: `[executioner] Wrote execution file: ${executionFilePath}`,
-    });
 
     // Log completion
     await this.logger.append({

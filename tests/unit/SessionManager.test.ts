@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { SessionManager, SessionRecord } from '../../src/lib/SessionManager.js';
 import { createTempWorkspace, cleanup, waitForFile } from '../helpers/tempDir.js';
@@ -43,9 +43,12 @@ describe('SessionManager', () => {
   });
 
   it('should create unique session IDs based on timestamp', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-17T10:00:00.000Z'));
     const id1 = sessionManager.createSessionId();
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    vi.setSystemTime(new Date('2026-04-17T10:00:00.010Z'));
     const id2 = sessionManager.createSessionId();
+    vi.useRealTimers();
 
     expect(id1).not.toBe(id2);
     // Session IDs should match ISO format with dashes

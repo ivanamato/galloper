@@ -49,6 +49,18 @@ test-coverage:
 dev *ARGS:
     npm run run -- {{ARGS}}
 
+# Symlink galloper globally via npm link
+link: build
+    @echo "Linking galloper globally..."
+    npm link
+    @echo "✓ galloper linked ($(which galloper))"
+
+# Remove global galloper symlink
+unlink:
+    @echo "Unlinking galloper..."
+    npm unlink -g galloper
+    @echo "✓ galloper unlinked"
+
 # Clean build artifacts and runtime data
 clean:
     @echo "Cleaning..."

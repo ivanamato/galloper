@@ -23,6 +23,8 @@ export interface WorkspaceRoot {
 export interface WorkspaceConfig {
   roots: WorkspaceRoot[];
   ignore?: string[];
+  quiesceMs?: number;
+  quiesceTimeoutMs?: number;
 }
 
 export interface LlmConfig {
@@ -191,6 +193,22 @@ export function validateLlmConfig(config: LlmConfig): void {
         if (typeof (workspace.ignore as unknown[])[i] !== 'string') {
           throw new Error(`workspace.ignore[${i}]: must be a string`);
         }
+      }
+    }
+
+    // Validate quiesceMs (optional)
+    if (workspace.quiesceMs !== undefined) {
+      const quiesceMs = workspace.quiesceMs as unknown;
+      if (typeof quiesceMs !== 'number' || !Number.isInteger(quiesceMs) || quiesceMs < 0) {
+        throw new Error('workspace.quiesceMs: must be a non-negative integer when present');
+      }
+    }
+
+    // Validate quiesceTimeoutMs (optional)
+    if (workspace.quiesceTimeoutMs !== undefined) {
+      const quiesceTimeoutMs = workspace.quiesceTimeoutMs as unknown;
+      if (typeof quiesceTimeoutMs !== 'number' || !Number.isInteger(quiesceTimeoutMs) || quiesceTimeoutMs < 0) {
+        throw new Error('workspace.quiesceTimeoutMs: must be a non-negative integer when present');
       }
     }
   }
@@ -530,6 +548,14 @@ export class ConfigManager {
     }
 
     return this.config.executionerEscalation ?? [];
+  }
+
+  getWorkspace(): WorkspaceConfig | undefined {
+    if (!this.config) {
+      throw new Error('Config not loaded. Call load() first.');
+    }
+
+    return this.config.workspace;
   }
 
 }
