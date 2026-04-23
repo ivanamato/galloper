@@ -5,6 +5,19 @@ import { HookFailure } from './TaskRunner.js';
 import { substitute, isPathSafeForShell, type TemplateContext } from './HookTemplate.js';
 import { PathLock } from './PathLock.js';
 
+/**
+ * Thrown by `runPost` when a hook with `onFailure:'abort'` exits non-zero.
+ * Carries the aborting hook's phase-local index so `TaskRunner` can look up
+ * the full `LifecycleHookConfig` (and its `onAbort` policy) without parsing
+ * the error message.
+ */
+export class AbortHookError extends Error {
+  constructor(message: string, public readonly hookIndex: number) {
+    super(message);
+    this.name = 'AbortHookError';
+  }
+}
+
 export type LifecyclePhase =
   | 'pre-plan' | 'post-plan'
   | 'pre-task' | 'post-task'
@@ -60,6 +73,20 @@ export interface LifecycleHookConfig {
     backoffMs: number;
     jitter?: number;
   };
+  /**
+   * Acknowledgement that the command contains a pattern flagged by
+   * `DestructivePatterns`. Without this flag, config-load fails when the
+   * command matches any destructive regex. The flag does not change
+   * behavior — it just proves the author read the command once.
+   */
+  destructive?: boolean;
+  /**
+   * `revert` → if this hook causes the task to abort (via `onFailure:'abort'`),
+   * TaskRunner calls `revertToBaseline` to restore the working tree to the
+   * state captured pre-task. `keep` (default) → abort preserves whatever
+   * the aborted task already wrote. No-op when `onFailure !== 'abort'`.
+   */
+  onAbort?: 'revert' | 'keep';
 }
 
 export interface HookContext {
@@ -237,7 +264,7 @@ ${result.stdout}
           });
 
           if (hook.onFailure === 'abort') {
-            throw new Error(`Post-hook aborted: ${cmdStr}`);
+            throw new AbortHookError(`Post-hook aborted: ${cmdStr}`, i);
           }
         }
       } catch (err) {

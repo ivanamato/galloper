@@ -13,6 +13,16 @@ const execFileAsync = promisify(execFile);
 export interface Baseline {
   head: string;
   entries: Record<string, string>;
+  /**
+   * SHA of a `git stash create` commit capturing the dirty TRACKED state at
+   * baseline time. Used by `revertToBaseline` to replay pre-task dirty edits
+   * after a reset. Untracked files at baseline are NOT captured in v1 —
+   * revert restores the committed state + stashed tracked dirty, but
+   * untracked files present at baseline are wiped by the revert's
+   * `git clean -fd`. `git stash create` is read-only; it does not mutate
+   * the working tree or the stash stack.
+   */
+  stashSha?: string;
 }
 
 export interface ReconciledPath {
@@ -133,7 +143,74 @@ export async function captureBaseline(cwd: string): Promise<Baseline> {
   const entries = await snapshotEntries(cwd);
   const record: Record<string, string> = {};
   for (const e of entries) record[e.path] = e.tag;
-  return { head, entries: record };
+
+  // Capture a READ-ONLY snapshot of the dirty tracked state via `git stash
+  // create`, which builds a commit object representing the current index +
+  // worktree but does NOT touch the working tree or the stash stack.
+  // Returning empty stdout on a clean tree is normal — we leave stashSha
+  // undefined in that case.
+  //
+  // Intentional non-goal for v1: `--include-untracked` is NOT passed (it
+  // isn't accepted by `stash create` anyway), so untracked files at
+  // baseline are not captured. The only safe alternative (`stash push
+  // --include-untracked` + `stash pop`) mutates the working tree — if any
+  // step of the chain fails, uncommitted files are lost. That cost is not
+  // worth the benefit for v1; document the limitation and revisit later.
+  let stashSha: string | undefined;
+  try {
+    const { stdout } = await runGit(cwd, ['stash', 'create']);
+    const trimmed = stdout.trim();
+    if (trimmed) stashSha = trimmed;
+  } catch {
+    // `git stash create` can fail on unborn branches or odd states; absence
+    // of stashSha just disables dirty-state replay in revert.
+  }
+
+  return { head, entries: record, ...(stashSha ? { stashSha } : {}) };
+}
+
+/**
+ * Restore the working tree to the state captured by `baseline`. Safe to call
+ * from an abort path — never throws; returns `{ reverted:false, reason }` on
+ * any failure so the caller can log and continue propagating the original
+ * error.
+ *
+ * **Destructive** — runs `git reset --hard` and `git clean -fd` on `cwd`.
+ * Only invoke when the caller has explicitly opted in (e.g. via
+ * `onAbort:'revert'` on a hook). Any uncommitted untracked files inside
+ * `cwd` at revert time are removed by `git clean -fd`; untracked files
+ * present at baseline are NOT restored in v1.
+ */
+export async function revertToBaseline(
+  cwd: string,
+  baseline: Baseline,
+): Promise<{ reverted: boolean; reason?: string }> {
+  try {
+    await assertGitRepo(cwd);
+  } catch {
+    return { reverted: false, reason: 'non-git' };
+  }
+  if (baseline.head === '0000000000000000000000000000000000000000') {
+    return { reverted: false, reason: 'unborn-branch' };
+  }
+  try {
+    await runGit(cwd, ['reset', '--hard', baseline.head]);
+  } catch (err) {
+    return { reverted: false, reason: `reset failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  try {
+    await runGit(cwd, ['clean', '-fd']);
+  } catch (err) {
+    return { reverted: false, reason: `clean failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (baseline.stashSha) {
+    try {
+      await runGit(cwd, ['stash', 'apply', baseline.stashSha]);
+    } catch (err) {
+      return { reverted: false, reason: `stash apply failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+  return { reverted: true };
 }
 
 /**

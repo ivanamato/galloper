@@ -3,6 +3,7 @@ import picomatch from 'picomatch';
 import { HooksConfig, LifecyclePhase } from './HookDispatcher.js';
 import { nearest } from './Suggest.js';
 import { KNOWN_SUBCOMMANDS, KNOWN_EVENTS } from './Doctor.js';
+import { detectDestructive } from './DestructivePatterns.js';
 
 export interface CommandEntry {
   command: string;
@@ -156,6 +157,26 @@ function validateHooksConfigPure(config: HooksConfig): void {
 
         if ((hook as Record<string, unknown>).shell !== undefined && typeof (hook as Record<string, unknown>).shell !== 'boolean') {
           throw new Error(`${phase} hook ${i}: shell must be a boolean`);
+        }
+
+        if ((hook as Record<string, unknown>).destructive !== undefined) {
+          if (typeof (hook as Record<string, unknown>).destructive !== 'boolean') {
+            throw new Error(`${phase} hook ${i}: destructive must be a boolean`);
+          }
+        }
+
+        if (hook.command !== undefined) {
+          const hits = detectDestructive(hook.command as string | string[]);
+          if (hits.length > 0 && (hook as Record<string, unknown>).destructive !== true) {
+            throw new Error(`${phase} hook ${i}: command contains destructive pattern '${hits.join("', '")}'. Add "destructive": true to acknowledge, or rewrite the command.`);
+          }
+        }
+
+        const onAbort = (hook as Record<string, unknown>).onAbort;
+        if (onAbort !== undefined) {
+          if (onAbort !== 'revert' && onAbort !== 'keep') {
+            throw new Error(`${phase} hook ${i}: onAbort must be 'revert' or 'keep', got '${String(onAbort)}'`);
+          }
         }
 
         const retry = (hook as Record<string, unknown>).retry;
