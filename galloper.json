@@ -77,6 +77,35 @@
           "command": "echo \"[post-task] $(date -u +%Y-%m-%dT%H:%M:%SZ) task finished\" >> galloper-data/hooks.log",
           "timeoutMs": 5000,
           "onFailure": "warn"
+        },
+        {
+          "command": "npm run build 2>&1 | tail -30",
+          "timeoutMs": 60000,
+          "onFailure": "warn"
+        },
+        {
+          "command": "npm run test:unit -- --reporter=basic 2>&1 | tail -20",
+          "timeoutMs": 120000,
+          "onFailure": "warn"
+        }
+      ],
+      "pre-task-file": [
+        {
+          "match": "src/**/*.ts",
+          "instructions": "Strict TypeScript. ESM: use `.js` extensions in relative imports (e.g. `./Foo.js`, not `./Foo` or `./Foo.ts`). Avoid `any`; prefer explicit interfaces. Match existing JSDoc style — concise top-of-function blocks explaining intent + non-obvious invariants."
+        },
+        {
+          "match": "tests/**/*.test.ts",
+          "instructions": "Vitest. Import source modules via `../../src/lib/X.js` (note the `.js` suffix). Unit tests live in `tests/unit/`, integration in `tests/integration/`. Shared fixtures and helpers live in `tests/helpers/`. Existing integration tests show the `runPlanHarness` pattern for spawning TaskRunner against a temp git repo."
+        }
+      ],
+      "post-task-file": [
+        {
+          "match": "tests/unit/**/*.test.ts",
+          "shell": false,
+          "command": ["npx", "vitest", "run", "{file}"],
+          "timeoutMs": 60000,
+          "onFailure": "warn"
         }
       ]
     },
