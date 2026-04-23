@@ -7,9 +7,16 @@ export function createFakePathLookup(presentBinaries: Iterable<string>) {
   };
 }
 
-export function createFakeDoctorDeps(presentBinaries: Iterable<string> = []): DoctorDeps {
+export function createFakeDoctorDeps(
+  presentBinaries: Iterable<string> = [],
+  existingPaths: Iterable<string> = []
+): DoctorDeps {
+  const paths = new Set(existingPaths);
   return {
     lookupOnPath: createFakePathLookup(presentBinaries),
     readFile: async () => '',
+    pathExists: async (p: string): Promise<boolean> => {
+      return paths.has(p);
+    },
   };
 }

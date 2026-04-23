@@ -69,6 +69,7 @@ export interface DoctorReport {
 export interface DoctorDeps {
   lookupOnPath(bin: string): Promise<boolean>;
   readFile(path: string): Promise<string>;
+  pathExists(p: string): Promise<boolean>;
 }
 
 export async function runDoctor(config: LlmConfig, deps: DoctorDeps): Promise<DoctorReport> {
@@ -186,6 +187,42 @@ export async function runDoctor(config: LlmConfig, deps: DoctorDeps): Promise<Do
     }
   }
 
+  // Check workspace roots validity
+  if (config.workspace?.roots) {
+    for (let i = 0; i < config.workspace.roots.length; i++) {
+      const root = config.workspace.roots[i];
+      const resolvedPath = resolvePath(process.cwd(), root.path);
+
+      // Check that root path exists
+      if (!(await deps.pathExists(resolvedPath))) {
+        errors.push({
+          code: 'WORKSPACE_ROOT_MISSING',
+          message: `workspace root '${root.label}' at '${root.path}' does not exist on disk`,
+          path: `workspace.roots[${i}].path`,
+        });
+        continue;
+      }
+
+      // Check VCS claim matches reality
+      const gitPath = resolvePath(resolvedPath, '.git');
+      const gitExists = await deps.pathExists(gitPath);
+
+      if (root.vcs === 'git' && !gitExists) {
+        errors.push({
+          code: 'WORKSPACE_ROOT_VCS_MISMATCH',
+          message: `workspace root '${root.label}' declared vcs:'git' but no .git found at '${root.path}'`,
+          path: `workspace.roots[${i}].vcs`,
+        });
+      } else if (root.vcs === 'none' && gitExists) {
+        errors.push({
+          code: 'WORKSPACE_ROOT_VCS_MISMATCH',
+          message: `workspace root '${root.label}' declared vcs:'none' but .git present at '${root.path}'`,
+          path: `workspace.roots[${i}].vcs`,
+        });
+      }
+    }
+  }
+
   return {
     errors,
     warnings,
@@ -223,7 +260,17 @@ async function lookupOnPath(bin: string): Promise<boolean> {
   return false;
 }
 
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const defaultDoctorDeps: DoctorDeps = {
   lookupOnPath,
   readFile: (path: string) => fs.readFile(path, 'utf8'),
+  pathExists,
 };

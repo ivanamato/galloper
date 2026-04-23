@@ -139,6 +139,8 @@ The `doctor` subcommand validates the `galloper.json` configuration and reports 
 - `allowedSubcommands` and `disallowedSubcommands` only reference known subcommands (`single-prompt`, `plan`, `implement`, `pipeline`)
 - Hook event names match the known set (20 total events)
 - Hook glob patterns are syntactically valid
+- `workspace.roots[*].path` exists on disk
+- `workspace.roots[*].vcs` claim matches reality (`.git` presence/absence)
 
 **Exit codes:**
 - `0` if no errors found
@@ -153,6 +155,16 @@ npm run run -- doctor --config ./galloper.json
 #       "code": "BINARY_NOT_FOUND",
 #       "message": "command 'claude' not found on $PATH",
 #       "path": "commands.claude-haiku.command"
+#     },
+#     {
+#       "code": "WORKSPACE_ROOT_MISSING",
+#       "message": "workspace root path does not exist on disk",
+#       "path": "workspace.roots[0].path"
+#     },
+#     {
+#       "code": "WORKSPACE_ROOT_VCS_MISMATCH",
+#       "message": "workspace vcs type mismatch: claimed vcs 'git' but .git directory not found",
+#       "path": "workspace.roots[1].vcs"
 #     }
 #   ],
 #   "warnings": []

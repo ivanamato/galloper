@@ -238,3 +238,194 @@ describe('Doctor', () => {
     expect(filterErrors(report.errors, 'INVALID_GLOB')).toHaveLength(1);
   });
 });
+
+describe('runDoctor workspace.roots', () => {
+  it('should emit no workspace errors when config has no workspace key (back-compat)', async () => {
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude']);
+    const report = await runDoctor(config, deps);
+
+    const workspaceErrors = report.errors.filter(
+      (e) => e.code === 'WORKSPACE_ROOT_MISSING' || e.code === 'WORKSPACE_ROOT_VCS_MISMATCH'
+    );
+    expect(workspaceErrors).toHaveLength(0);
+  });
+
+  it('should emit no errors for valid workspace root with git vcs', async () => {
+    const rootPath = '/test/workspace/root1';
+    const gitPath = `${rootPath}/.git`;
+
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      workspace: {
+        roots: [
+          {
+            path: rootPath,
+            label: 'Main Repo',
+            vcs: 'git',
+          },
+        ],
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude'], [rootPath, gitPath]);
+    const report = await runDoctor(config, deps);
+
+    const workspaceErrors = report.errors.filter(
+      (e) => e.code === 'WORKSPACE_ROOT_MISSING' || e.code === 'WORKSPACE_ROOT_VCS_MISMATCH'
+    );
+    expect(workspaceErrors).toHaveLength(0);
+  });
+
+  it('should error when workspace root path does not exist', async () => {
+    const rootPath = '/test/workspace/missing';
+
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      workspace: {
+        roots: [
+          {
+            path: rootPath,
+            label: 'Missing Repo',
+            vcs: 'git',
+          },
+        ],
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude'], []);
+    const report = await runDoctor(config, deps);
+
+    const errors = filterErrors(report.errors, 'WORKSPACE_ROOT_MISSING');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].path).toBe('workspace.roots[0].path');
+    expect(errors[0].message).toContain('Missing Repo');
+  });
+
+  it('should error when git root has vcs:git but no .git directory', async () => {
+    const rootPath = '/test/workspace/nogit';
+
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      workspace: {
+        roots: [
+          {
+            path: rootPath,
+            label: 'No Git Dir',
+            vcs: 'git',
+          },
+        ],
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude'], [rootPath]);
+    const report = await runDoctor(config, deps);
+
+    const errors = filterErrors(report.errors, 'WORKSPACE_ROOT_VCS_MISMATCH');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].path).toBe('workspace.roots[0].vcs');
+    expect(errors[0].message).toContain("vcs:'git'");
+  });
+
+  it('should error when root with vcs:none has .git directory present', async () => {
+    const rootPath = '/test/workspace/nonevcs';
+    const gitPath = `${rootPath}/.git`;
+
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      workspace: {
+        roots: [
+          {
+            path: rootPath,
+            label: 'No VCS Root',
+            vcs: 'none',
+          },
+        ],
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude'], [rootPath, gitPath]);
+    const report = await runDoctor(config, deps);
+
+    const errors = filterErrors(report.errors, 'WORKSPACE_ROOT_VCS_MISMATCH');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].path).toBe('workspace.roots[0].vcs');
+    expect(errors[0].message).toContain("vcs:'none'");
+  });
+
+  it('should report error at correct index when multiple roots and one is missing', async () => {
+    const validRoot = '/test/workspace/valid';
+    const validGit = `${validRoot}/.git`;
+    const missingRoot = '/test/workspace/missing';
+
+    const config: LlmConfig = {
+      default: 'claude-haiku',
+      commands: {
+        'claude-haiku': {
+          command: 'claude',
+          allowedSubcommands: [],
+          disallowedSubcommands: [],
+        },
+      },
+      workspace: {
+        roots: [
+          {
+            path: validRoot,
+            label: 'Valid Root',
+            vcs: 'git',
+          },
+          {
+            path: missingRoot,
+            label: 'Missing Root',
+            vcs: 'git',
+          },
+        ],
+      },
+    };
+
+    const deps = createFakeDoctorDeps(['claude'], [validRoot, validGit]);
+    const report = await runDoctor(config, deps);
+
+    const errors = filterErrors(report.errors, 'WORKSPACE_ROOT_MISSING');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].path).toBe('workspace.roots[1].path');
+  });
+});
