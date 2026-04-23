@@ -1,6 +1,17 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+export interface ClassifiedPath {
+  path: string;
+  action: 'create' | 'edit' | 'delete';
+}
+
+export interface TaskManifest {
+  declared: ClassifiedPath[];
+  surprise: ClassifiedPath[];
+  churn: ClassifiedPath[];
+}
+
 export interface SessionRecord {
   id: string;
   prompt: string;
@@ -15,6 +26,7 @@ export interface SessionRecord {
   parsedStdoutEvents: unknown[];
   parsedStderrEvents: unknown[];
   finalOutput: string | null;
+  taskManifests: Record<string, TaskManifest>;
 }
 
 export class SessionManager {

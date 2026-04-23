@@ -103,7 +103,7 @@ npm run run -- [args]      # Auto-builds + runs compiled CLI
 
 ### CLI Usage
 
-The CLI accepts three basic subcommands as positional arguments:
+The CLI accepts several positional subcommands:
 
 ```bash
 # single-prompt: send a prompt and get a response (uses default command)
@@ -115,8 +115,82 @@ npm run run -- plan --prompt "Task to plan"
 # implement: execute implementation based on a plan file (uses defaultExecutioner)
 npm run run -- implement --plan-file ./galloper-data/plans/plan.json
 
+# pipeline: generate and execute a plan in one step (uses defaultPlanner and defaultExecutioner)
+npm run run -- pipeline --prompt "Build and execute a complete plan"
+
+# doctor: validate the galloper.json configuration
+npm run run -- doctor --config ./galloper.json
+
+# init: scaffold a new galloper.json by detecting installed LLM CLIs
+npm run run -- init --non-interactive
+
 # Prompt from file
 npm run run -- plan --prompt-file ./task.txt
+```
+
+### Doctor Subcommand
+
+The `doctor` subcommand validates the `galloper.json` configuration and reports issues.
+
+**Checks (v1):**
+- Config file exists and is valid JSON
+- `default`, `defaultPlanner`, and `defaultExecutioner` (if set) reference existing command entries
+- Each command entry's first shell token exists on `$PATH`
+- `allowedSubcommands` and `disallowedSubcommands` only reference known subcommands (`single-prompt`, `plan`, `implement`, `pipeline`)
+- Hook event names match the known set (20 total events)
+- Hook glob patterns are syntactically valid
+
+**Exit codes:**
+- `0` if no errors found
+- `1` if any errors are found
+
+**Example output:**
+```bash
+npm run run -- doctor --config ./galloper.json
+# {
+#   "errors": [
+#     {
+#       "code": "BINARY_NOT_FOUND",
+#       "message": "command 'claude' not found on $PATH",
+#       "path": "commands.claude-haiku.command"
+#     }
+#   ],
+#   "warnings": []
+# }
+```
+
+### Init Subcommand
+
+The `init` subcommand scaffolds a new `galloper.json` by detecting installed LLM CLIs on `$PATH` and writing a minimal, validated config.
+
+**Detection set:** `claude`, `codex`, `gemini` (hardcoded; conservative default command strings per CLI).
+
+**Flags:**
+- `--force` — overwrite an existing `galloper.json`
+- `--non-interactive` — skip prompts; select all detected CLIs with the first detected as `default`
+- `--default <name>` — use the named CLI as the default command (must be one of the selected)
+
+**Behavior:**
+- Refuses to overwrite an existing `galloper.json` unless `--force` is given
+- TTY detection: if either stdin or stderr is not a TTY, behaves as if `--non-interactive` were passed
+- In TTY mode, prompts for which detected CLIs to include (comma-separated; blank or `all` picks all) and which to use as the default
+- Round-trips the in-memory config through the same validator `ConfigManager` uses at load time before writing. Invalid configs are never written.
+- Atomic write: contents go to `galloper.json.tmp-<random>` then `rename` to the final path. On any write failure the tmp file is unlinked and no partial file is left on disk.
+
+**Exit codes:**
+- `0` on success (config written)
+- `1` on any failure (file exists without `--force`, no CLI detected, unknown `--default`, validation failure, write failure)
+- `2` on argument parse errors (unknown subcommand, etc.)
+
+**Example:**
+```bash
+npm run run -- init --non-interactive --default codex
+# {
+#   "ok": true,
+#   "writtenPath": "/path/to/galloper.json",
+#   "selected": ["claude", "codex", "gemini"],
+#   "defaultName": "codex"
+# }
 ```
 
 ### Command Resolution

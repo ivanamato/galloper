@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import picomatch from 'picomatch';
 import { HooksConfig, LifecyclePhase } from './HookDispatcher.js';
+import { nearest } from './Suggest.js';
+import { KNOWN_SUBCOMMANDS, KNOWN_EVENTS } from './Doctor.js';
 
 export interface CommandEntry {
   command: string;
@@ -17,6 +19,211 @@ export interface LlmConfig {
   commands: Record<string, CommandEntry>;
   hooks?: HooksConfig;
   executionerEscalation?: string[];
+}
+
+function isSubcommandAllowedForEntry(entry: CommandEntry, subcommand: string): boolean {
+  if (entry.disallowedSubcommands?.includes(subcommand)) {
+    return false;
+  }
+  if (!entry.allowedSubcommands || entry.allowedSubcommands.length === 0) {
+    return true;
+  }
+  return entry.allowedSubcommands.includes(subcommand);
+}
+
+export function validateLlmConfig(config: LlmConfig): void {
+  if (config.defaultPlanner && !config.commands[config.defaultPlanner]) {
+    const candidates = Object.keys(config.commands);
+    const suggestion = nearest(config.defaultPlanner, candidates)[0];
+    const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+    throw new Error(`defaultPlanner "${config.defaultPlanner}" does not exist in commands${suggestionText}`);
+  }
+
+  if (config.defaultExecutioner && !config.commands[config.defaultExecutioner]) {
+    const candidates = Object.keys(config.commands);
+    const suggestion = nearest(config.defaultExecutioner, candidates)[0];
+    const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+    throw new Error(`defaultExecutioner "${config.defaultExecutioner}" does not exist in commands${suggestionText}`);
+  }
+
+  for (const [cmdName, entry] of Object.entries(config.commands)) {
+    if ((entry as Record<string, unknown>).env !== undefined) {
+      const env = (entry as Record<string, unknown>).env;
+      if (typeof env !== 'object' || env === null || Array.isArray(env)) {
+        throw new Error(`Command "${cmdName}" env must be an object (map of strings)`);
+      }
+      for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+        if (typeof value !== 'string') {
+          throw new Error(`Command "${cmdName}" env.${key} must be a string, got ${typeof value}`);
+        }
+      }
+    }
+
+    const allowed = (entry as Record<string, unknown>).allowedSubcommands as string[] | undefined;
+    if (allowed && Array.isArray(allowed)) {
+      for (let i = 0; i < allowed.length; i++) {
+        const subcommand = allowed[i];
+        if (!KNOWN_SUBCOMMANDS.includes(subcommand as any)) {
+          const suggestion = nearest(subcommand, [...KNOWN_SUBCOMMANDS])[0];
+          const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+          throw new Error(`Command "${cmdName}" allowedSubcommands[${i}]: unknown subcommand "${subcommand}"${suggestionText}`);
+        }
+      }
+    }
+
+    const disallowed = (entry as Record<string, unknown>).disallowedSubcommands as string[] | undefined;
+    if (disallowed && Array.isArray(disallowed)) {
+      for (let i = 0; i < disallowed.length; i++) {
+        const subcommand = disallowed[i];
+        if (!KNOWN_SUBCOMMANDS.includes(subcommand as any)) {
+          const suggestion = nearest(subcommand, [...KNOWN_SUBCOMMANDS])[0];
+          const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+          throw new Error(`Command "${cmdName}" disallowedSubcommands[${i}]: unknown subcommand "${subcommand}"${suggestionText}`);
+        }
+      }
+    }
+  }
+
+  if (config.executionerEscalation) {
+    if (!Array.isArray(config.executionerEscalation)) {
+      throw new Error('executionerEscalation must be an array of command names');
+    }
+
+    for (let i = 0; i < config.executionerEscalation.length; i++) {
+      const cmdName = config.executionerEscalation[i];
+      if (typeof cmdName !== 'string') {
+        throw new Error(`executionerEscalation[${i}] must be a string command name, got ${typeof cmdName}`);
+      }
+
+      const entry = config.commands[cmdName];
+      if (!entry) {
+        throw new Error(`executionerEscalation[${i}]: command "${cmdName}" does not exist`);
+      }
+
+      if (!isSubcommandAllowedForEntry(entry, 'implement')) {
+        throw new Error(`executionerEscalation[${i}]: command "${cmdName}" does not allow implement subcommand`);
+      }
+    }
+  }
+
+  if (config.hooks) {
+    validateHooksConfigPure(config.hooks);
+  }
+}
+
+function validateHooksConfigPure(config: HooksConfig): void {
+  const validPhases = new Set<LifecyclePhase>([
+    'pre-plan', 'post-plan',
+    'pre-task', 'post-task',
+    'pre-task-file', 'post-task-file'
+  ]);
+
+  if (config.lifecycle) {
+    for (const [phase, hooks] of Object.entries(config.lifecycle)) {
+      if (!validPhases.has(phase as LifecyclePhase)) {
+        throw new Error(`Unknown lifecycle phase: ${phase}. Valid phases: ${Array.from(validPhases).join(', ')}`);
+      }
+
+      if (!Array.isArray(hooks)) continue;
+
+      for (let i = 0; i < hooks.length; i++) {
+        const hook = hooks[i];
+        if (!hook) continue;
+
+        if (phase === 'post-plan' && hook.onFailure === 'retry') {
+          throw new Error(`post-plan hooks cannot have onFailure: 'retry' (hook index ${i})`);
+        }
+
+        if (phase.startsWith('pre-') && !hook.instructions && !hook.command) {
+          throw new Error(`${phase} hook ${i} must have either 'instructions' or 'command'`);
+        }
+
+        if (phase.startsWith('post-') && !hook.command) {
+          throw new Error(`${phase} hook ${i} must have a 'command' property`);
+        }
+
+        if (hook.command !== undefined) {
+          const shellMode = (hook as Record<string, unknown>).shell !== false;
+          if (shellMode && typeof hook.command !== 'string') {
+            throw new Error(`${phase} hook ${i}: when shell:true (default), command must be a string`);
+          }
+          if (!shellMode) {
+            if (!Array.isArray(hook.command) || hook.command.length === 0 || hook.command.some((x: unknown) => typeof x !== 'string')) {
+              throw new Error(`${phase} hook ${i}: when shell:false, command must be a non-empty string[]`);
+            }
+          }
+        }
+
+        if ((hook as Record<string, unknown>).shell !== undefined && typeof (hook as Record<string, unknown>).shell !== 'boolean') {
+          throw new Error(`${phase} hook ${i}: shell must be a boolean`);
+        }
+
+        const retry = (hook as Record<string, unknown>).retry;
+        if (retry !== undefined) {
+          if (typeof retry !== 'object' || retry === null || Array.isArray(retry)) {
+            throw new Error(`${phase} hook ${i}: retry must be an object`);
+          }
+          const r = retry as Record<string, unknown>;
+          const maxAttempts = r.maxAttempts;
+          const backoffMs = r.backoffMs;
+          const jitter = r.jitter;
+          if (typeof maxAttempts !== 'number' || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 20) {
+            throw new Error(`${phase} hook ${i}: retry.maxAttempts must be an integer in [1, 20]`);
+          }
+          if (typeof backoffMs !== 'number' || !Number.isInteger(backoffMs) || backoffMs < 0) {
+            throw new Error(`${phase} hook ${i}: retry.backoffMs must be a non-negative integer`);
+          }
+          if (jitter !== undefined) {
+            if (typeof jitter !== 'number' || !Number.isFinite(jitter) || jitter < 0 || jitter > 1) {
+              throw new Error(`${phase} hook ${i}: retry.jitter must be a number in [0, 1]`);
+            }
+          }
+        }
+
+        if ((phase === 'pre-task-file' || phase === 'post-task-file') && !hook.match) {
+          throw new Error(`${phase} hook ${i} must have a 'match' glob pattern`);
+        }
+
+        if (hook.match) {
+          try {
+            picomatch.makeRe(hook.match);
+          } catch (error) {
+            throw new Error(`${phase} hook ${i} has invalid glob pattern "${hook.match}": ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+
+        if ((hook as Record<string, unknown>).runOnSurprise !== undefined) {
+          if (typeof (hook as Record<string, unknown>).runOnSurprise !== 'boolean') {
+            throw new Error(`${phase} hook ${i}: runOnSurprise must be a boolean`);
+          }
+          if (phase !== 'post-task-file') {
+            throw new Error(`${phase} hook ${i}: runOnSurprise is only valid on post-task-file hooks`);
+          }
+        }
+      }
+    }
+  }
+
+  if (config.events) {
+    for (const [eventType, hooks] of Object.entries(config.events)) {
+      if (!KNOWN_EVENTS.includes(eventType as any)) {
+        const suggestion = nearest(eventType, [...KNOWN_EVENTS])[0];
+        const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+        throw new Error(`Unknown event type: ${eventType}${suggestionText}`);
+      }
+
+      if (!Array.isArray(hooks)) continue;
+
+      for (let i = 0; i < hooks.length; i++) {
+        const hook = hooks[i];
+        if (!hook) continue;
+
+        if (!hook.command) {
+          throw new Error(`${eventType} event hook ${i} must have a 'command' property`);
+        }
+      }
+    }
+  }
 }
 
 export class ConfigManager {
@@ -36,9 +243,8 @@ export class ConfigManager {
     try {
       const content = await fs.readFile(this.configPath, 'utf8');
       this.config = JSON.parse(content) as LlmConfig;
-      this.validateLoadedConfig();
+      validateLlmConfig(this.config);
       if (this.config.hooks) {
-        this.validateHooksConfig(this.config.hooks);
         this.hooks = this.config.hooks;
       }
       return this.config;
@@ -47,126 +253,6 @@ export class ConfigManager {
         throw new Error(`Invalid JSON in galloper.json: ${error.message}`);
       }
       throw new Error(`Failed to load galloper.json: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  private validateLoadedConfig(): void {
-    if (!this.config) {
-      return;
-    }
-
-    if (this.config.defaultPlanner && !this.config.commands[this.config.defaultPlanner]) {
-      throw new Error(`defaultPlanner "${this.config.defaultPlanner}" does not exist in commands`);
-    }
-
-    if (this.config.defaultExecutioner && !this.config.commands[this.config.defaultExecutioner]) {
-      throw new Error(`defaultExecutioner "${this.config.defaultExecutioner}" does not exist in commands`);
-    }
-
-    // Validate env fields in all commands
-    for (const [cmdName, entry] of Object.entries(this.config.commands)) {
-      if ((entry as Record<string, unknown>).env !== undefined) {
-        const env = (entry as Record<string, unknown>).env;
-        if (typeof env !== 'object' || env === null || Array.isArray(env)) {
-          throw new Error(`Command "${cmdName}" env must be an object (map of strings)`);
-        }
-        for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
-          if (typeof value !== 'string') {
-            throw new Error(`Command "${cmdName}" env.${key} must be a string, got ${typeof value}`);
-          }
-        }
-      }
-    }
-
-    // Validate executionerEscalation if present
-    if (this.config.executionerEscalation) {
-      if (!Array.isArray(this.config.executionerEscalation)) {
-        throw new Error('executionerEscalation must be an array of command names');
-      }
-
-      for (let i = 0; i < this.config.executionerEscalation.length; i++) {
-        const cmdName = this.config.executionerEscalation[i];
-        if (typeof cmdName !== 'string') {
-          throw new Error(`executionerEscalation[${i}] must be a string command name, got ${typeof cmdName}`);
-        }
-
-        if (!this.config.commands[cmdName]) {
-          throw new Error(`executionerEscalation[${i}]: command "${cmdName}" does not exist`);
-        }
-
-        const entry = this.config.commands[cmdName];
-        if (!this.isSubcommandAllowed(cmdName, 'implement')) {
-          throw new Error(`executionerEscalation[${i}]: command "${cmdName}" does not allow implement subcommand`);
-        }
-      }
-    }
-  }
-
-  private validateHooksConfig(config: HooksConfig): void {
-    const validPhases = new Set<LifecyclePhase>([
-      'pre-plan', 'post-plan',
-      'pre-task', 'post-task',
-      'pre-task-file', 'post-task-file'
-    ]);
-
-    if (config.lifecycle) {
-      for (const [phase, hooks] of Object.entries(config.lifecycle)) {
-        if (!validPhases.has(phase as LifecyclePhase)) {
-          throw new Error(`Unknown lifecycle phase: ${phase}. Valid phases: ${Array.from(validPhases).join(', ')}`);
-        }
-
-        if (!Array.isArray(hooks)) continue;
-
-        for (let i = 0; i < hooks.length; i++) {
-          const hook = hooks[i];
-          if (!hook) continue;
-
-          // post-plan retry disallowed
-          if (phase === 'post-plan' && hook.onFailure === 'retry') {
-            throw new Error(`post-plan hooks cannot have onFailure: 'retry' (hook index ${i})`);
-          }
-
-          // pre-hook must have instructions or command
-          if (phase.startsWith('pre-') && !hook.instructions && !hook.command) {
-            throw new Error(`${phase} hook ${i} must have either 'instructions' or 'command'`);
-          }
-
-          // post-hook must have command
-          if (phase.startsWith('post-') && !hook.command) {
-            throw new Error(`${phase} hook ${i} must have a 'command' property`);
-          }
-
-          // *-file phases must have match glob
-          if ((phase === 'pre-task-file' || phase === 'post-task-file') && !hook.match) {
-            throw new Error(`${phase} hook ${i} must have a 'match' glob pattern`);
-          }
-
-          // Validate glob patterns
-          if (hook.match) {
-            try {
-              picomatch.makeRe(hook.match);
-            } catch (error) {
-              throw new Error(`${phase} hook ${i} has invalid glob pattern "${hook.match}": ${error instanceof Error ? error.message : String(error)}`);
-            }
-          }
-        }
-      }
-    }
-
-    if (config.events) {
-      for (const [eventType, hooks] of Object.entries(config.events)) {
-        if (!Array.isArray(hooks)) continue;
-
-        for (let i = 0; i < hooks.length; i++) {
-          const hook = hooks[i];
-          if (!hook) continue;
-
-          // Event hooks must have command
-          if (!hook.command) {
-            throw new Error(`${eventType} event hook ${i} must have a 'command' property`);
-          }
-        }
-      }
     }
   }
 
@@ -184,7 +270,10 @@ export class ConfigManager {
 
     if (!this.config.commands || !this.config.commands[name]) {
       const available = Object.keys(this.config.commands || {}).join(', ') || 'none';
-      throw new Error(`Unknown command: ${name}. Available: ${available}`);
+      const candidates = Object.keys(this.config.commands || {});
+      const suggestion = nearest(name, candidates)[0];
+      const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+      throw new Error(`Unknown command: ${name}. Available: ${available}${suggestionText}`);
     }
 
     return this.resolveCommandEntry(this.config.commands[name]);

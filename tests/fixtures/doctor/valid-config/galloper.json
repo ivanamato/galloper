@@ -1,0 +1,10 @@
+{
+  "default": "ls-test",
+  "commands": {
+    "ls-test": {
+      "command": "ls -la",
+      "allowedSubcommands": ["single-prompt", "plan"],
+      "disallowedSubcommands": []
+    }
+  }
+}

@@ -6,7 +6,7 @@ import { VerbosityLevel } from './Verbosity.js';
 export interface LogEvent {
   sessionId: string;
   timestamp: string;
-  type: 'run.started' | 'run.completed' | 'run.failed' | 'run.crashed' | 'process.spawn' | 'process.stdout' | 'process.stderr' | 'run.command_resolved' | 'task.completed' | 'task.failed' | 'hook.failed' | 'task.started' | 'task.attempt.started' | 'task.attempt.completed' | 'task.attempt.failed' | 'task.abandoned' | 'task.aborted' | 'plan.started' | 'plan.completed' | 'plan.aborted';
+  type: 'run.started' | 'run.completed' | 'run.failed' | 'run.crashed' | 'process.spawn' | 'process.stdout' | 'process.stderr' | 'run.command_resolved' | 'task.completed' | 'task.failed' | 'hook.failed' | 'task.started' | 'task.attempt.started' | 'task.attempt.completed' | 'task.attempt.failed' | 'task.abandoned' | 'task.aborted' | 'plan.started' | 'plan.completed' | 'plan.aborted' | 'task.file.declared' | 'task.file.surprise' | 'task.file.churn' | 'workspace.baseline.captured' | 'workspace.reconciled';
   minLevel?: VerbosityLevel;
   message?: string;
   [key: string]: unknown;

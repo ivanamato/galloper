@@ -1,0 +1,19 @@
+{
+  "default": "test-cli",
+  "commands": {
+    "test-cli": {
+      "command": "echo test",
+      "allowedSubcommands": [],
+      "disallowedSubcommands": []
+    }
+  },
+  "hooks": {
+    "events": {
+      "run.startd": [
+        {
+          "command": "echo event"
+        }
+      ]
+    }
+  }
+}

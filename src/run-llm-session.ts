@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { promises as fs } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { Logger } from './lib/Logger.js';
 import { SessionManager } from './lib/SessionManager.js';
@@ -11,6 +12,10 @@ import { Executioner } from './lib/Executioner.js';
 import { Orchestrator, OrchestratorInput, isSubcommand, SubcommandName } from './lib/Orchestrator.js';
 import { clampVerbosity } from './lib/Verbosity.js';
 import { ConsoleHumanReporter, NullHumanReporter } from './lib/HumanReporter.js';
+import { runDoctor, defaultDoctorDeps, KNOWN_SUBCOMMANDS } from './lib/Doctor.js';
+import { nearest } from './lib/Suggest.js';
+import { runInit, InitDeps } from './lib/Init.js';
+import { createReadlinePrompter } from './lib/Prompter.js';
 
 const CWD = process.cwd();
 const ROOT_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -23,13 +28,17 @@ const CONFIG_PATH = path.join(CWD, 'galloper.json');
 const CENTRAL_LOG_PATH = path.join(LOGS_DIR, 'runs.jsonl');
 
 interface CliArgs {
-  subcommand: SubcommandName;
+  subcommand: SubcommandName | 'doctor' | 'init';
   prompt?: string;
   promptFile?: string;
   planFile?: string;
+  configPath?: string;
   verbosity: number;
   humanFriendly: boolean;
   concurrency?: number;
+  force?: boolean;
+  nonInteractive?: boolean;
+  defaultName?: string;
 }
 
 function printUsage(): void {
@@ -40,12 +49,18 @@ Subcommands:
   plan              Generate a plan for a task
   implement         Execute implementation based on a plan
   pipeline          Generate a plan and execute all tasks (plan + implement)
+  doctor            Validate the galloper.json configuration
+  init              Scaffold a new galloper.json by detecting installed LLM CLIs
 
 Options:
   --prompt <text>        The prompt text (required for single-prompt/plan if --prompt-file not provided)
   --prompt-file <path>   Path to a file containing the prompt (for single-prompt/plan)
   --plan-file <path>     Path to a plan JSON file (required for implement)
+  --config <path>        Path to galloper.json (optional for doctor, default: ./galloper.json)
   --concurrency <n>      Number of concurrent tasks (default: 1, sequential)
+  --force                (init) Overwrite an existing galloper.json
+  --non-interactive      (init) Skip prompts; select all detected CLIs, first as default
+  --default <name>       (init) Use the named CLI as the default command
   -v                     Verbose level 1 (show start/end events)
   -vv                    Verbose level 2 (show command resolution)
   -vvv                   Verbose level 3 (show all subprocess I/O)
@@ -56,18 +71,29 @@ Examples:
   galloper plan --prompt-file ./task.txt -v
   galloper implement --plan-file ./galloper-data/plans/plan.json -vv
   galloper pipeline --prompt "Build and execute a complete plan" -vvv
+  galloper doctor --config ./galloper.json
+  galloper init --non-interactive
 `);
+}
+
+const EXTRA_SUBCOMMANDS = ['doctor', 'init'] as const;
+
+function isExtraSubcommand(arg: string): arg is typeof EXTRA_SUBCOMMANDS[number] {
+  return (EXTRA_SUBCOMMANDS as readonly string[]).includes(arg);
 }
 
 function parseArgs(argv: string[]): CliArgs {
   const subcommandArg = argv[0];
-  if (!subcommandArg || !isSubcommand(subcommandArg)) {
+  if (!subcommandArg || (!isExtraSubcommand(subcommandArg) && !isSubcommand(subcommandArg))) {
     printUsage();
     process.exitCode = 2;
-    throw new Error(`Invalid or missing subcommand. Expected one of: single-prompt, plan, implement`);
+    const candidates = [...KNOWN_SUBCOMMANDS, ...EXTRA_SUBCOMMANDS];
+    const suggestion = nearest(subcommandArg, candidates)[0];
+    const suggestionText = suggestion ? ` (did you mean '${suggestion}'?)` : '';
+    throw new Error(`Invalid or missing subcommand. Expected one of: single-prompt, plan, implement, pipeline, doctor, init${suggestionText}`);
   }
 
-  const parsed: CliArgs = { subcommand: subcommandArg, verbosity: 0, humanFriendly: false };
+  const parsed: CliArgs = { subcommand: subcommandArg as any, verbosity: 0, humanFriendly: false };
 
   for (let i = 1; i < argv.length; i += 1) {
     const token = argv[i];
@@ -80,11 +106,21 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (token === '--plan-file') {
       parsed.planFile = argv[i + 1];
       i += 1;
+    } else if (token === '--config') {
+      parsed.configPath = argv[i + 1];
+      i += 1;
     } else if (token === '--concurrency') {
       const num = parseInt(argv[i + 1], 10);
       if (!isNaN(num) && num >= 1) {
         parsed.concurrency = num;
       }
+      i += 1;
+    } else if (token === '--force') {
+      parsed.force = true;
+    } else if (token === '--non-interactive') {
+      parsed.nonInteractive = true;
+    } else if (token === '--default') {
+      parsed.defaultName = argv[i + 1];
       i += 1;
     } else if (/^-v+$/.test(token)) {
       parsed.verbosity = token.length - 1;
@@ -116,6 +152,78 @@ async function resolvePrompt(args: CliArgs): Promise<string> {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+
+  // Handle doctor subcommand separately
+  if (args.subcommand === 'doctor') {
+    const configPath = args.configPath ? path.resolve(CWD, args.configPath) : CONFIG_PATH;
+    const configManager = new ConfigManager({ configPath });
+
+    try {
+      const config = await configManager.load();
+      const report = await runDoctor(config, defaultDoctorDeps);
+
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+
+      if (report.errors.length > 0) {
+        process.exitCode = 1;
+      } else {
+        process.exitCode = 0;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`${message}\n`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  // Handle init subcommand separately
+  if (args.subcommand === 'init') {
+    const configPath = args.configPath ? path.resolve(CWD, args.configPath) : CONFIG_PATH;
+    const tty = Boolean(process.stdin.isTTY && process.stderr.isTTY);
+    const nonInteractive = Boolean(args.nonInteractive) || !tty;
+    const prompter = nonInteractive ? null : createReadlinePrompter();
+
+    const deps: InitDeps = {
+      pathLookup: defaultDoctorDeps.lookupOnPath,
+      prompter,
+      writeFile: (p, c) => fs.writeFile(p, c, 'utf8'),
+      rename: (from, to) => fs.rename(from, to),
+      unlink: (p) => fs.unlink(p),
+      fileExists: async (p) => {
+        try {
+          await fs.access(p);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      randomSuffix: () => randomBytes(6).toString('hex'),
+    };
+
+    try {
+      const result = await runInit(
+        {
+          force: Boolean(args.force),
+          nonInteractive,
+          defaultName: args.defaultName,
+          configPath,
+        },
+        deps,
+      );
+
+      if (result.ok) {
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        process.exitCode = 0;
+      } else {
+        process.stderr.write(`${result.message}\n`);
+        process.exitCode = 1;
+      }
+    } finally {
+      prompter?.close();
+    }
+    return;
+  }
 
   // For implement subcommand, we don't need a prompt, just a plan file
   let prompt = '';
@@ -166,7 +274,7 @@ async function main(): Promise<void> {
   });
 
   const input: OrchestratorInput = {
-    subcommand: args.subcommand,
+    subcommand: args.subcommand as SubcommandName,
     prompt: prompt || undefined,
     planFile: args.planFile,
     cwd: CWD,

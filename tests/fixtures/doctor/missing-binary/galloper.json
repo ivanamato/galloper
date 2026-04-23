@@ -1,0 +1,10 @@
+{
+  "default": "missing-cmd",
+  "commands": {
+    "missing-cmd": {
+      "command": "definitely-not-real-binary-xyz --test",
+      "allowedSubcommands": [],
+      "disallowedSubcommands": []
+    }
+  }
+}

@@ -190,6 +190,7 @@ export class Orchestrator {
         parsedStdoutEvents: result.parsedStdoutEvents,
         parsedStderrEvents: result.parsedStderrEvents,
         finalOutput: CoreRunner.extractFinalOutput(result.stdout),
+        taskManifests: {},
       };
 
       const sessionFilePath = await this.sessionManager.writeSession(sessionId, sessionRecord);

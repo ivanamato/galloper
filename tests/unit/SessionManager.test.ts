@@ -36,6 +36,7 @@ describe('SessionManager', () => {
       parsedStdoutEvents: [],
       parsedStderrEvents: [],
       finalOutput: 'result',
+      taskManifests: {},
     };
     const path = await sessionManager.writeSession('test-1', record);
     expect(path).toBeTruthy();
@@ -69,6 +70,7 @@ describe('SessionManager', () => {
       parsedStdoutEvents: [{ type: 'event', data: 'test' }],
       parsedStderrEvents: [],
       finalOutput: 'hello',
+      taskManifests: {},
     };
 
     const filePath = await sessionManager.writeSession('test-session-1', record);
@@ -109,6 +111,7 @@ describe('SessionManager', () => {
       parsedStdoutEvents: [],
       parsedStderrEvents: [],
       finalOutput: null,
+      taskManifests: {},
     };
 
     const filePath = await sessionManager.writeSession('test-null-exit', record);
@@ -144,6 +147,7 @@ describe('SessionManager', () => {
       parsedStdoutEvents: [],
       parsedStderrEvents: [],
       finalOutput: null,
+      taskManifests: {},
     };
 
     const filePath = await sessionManager.writeSession('test-empty-arrays', record);
@@ -171,6 +175,7 @@ describe('SessionManager', () => {
       parsedStdoutEvents: [],
       parsedStderrEvents: [],
       finalOutput: 'result',
+      taskManifests: {},
     };
 
     const filePath = await sessionManager.writeSession('test-pretty', record);
@@ -199,6 +204,7 @@ describe('SessionManager', () => {
       parsedStdoutEvents: [],
       parsedStderrEvents: [],
       finalOutput: 'result',
+      taskManifests: {},
     };
 
     const filePath = await sessionManager.writeSession('test-large', record);

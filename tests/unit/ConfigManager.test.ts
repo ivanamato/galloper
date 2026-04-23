@@ -498,3 +498,322 @@ describe('ConfigManager', () => {
     rmSync(badEnvValueConfigPath);
   });
 });
+
+describe('validateLlmConfig (pure)', () => {
+  const BASE = (): import('../../src/lib/ConfigManager.js').LlmConfig => ({
+    default: 'a',
+    commands: {
+      a: { command: 'echo', allowedSubcommands: [], disallowedSubcommands: [] },
+    },
+  });
+
+  it('accepts a minimal valid config', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    expect(() => validateLlmConfig(BASE())).not.toThrow();
+  });
+
+  it('throws when defaultPlanner references unknown command (with suggestion)', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.defaultPlanner = 'ab';
+    expect(() => validateLlmConfig(cfg)).toThrow(/defaultPlanner.*ab.*did you mean 'a'/);
+  });
+
+  it('throws when defaultExecutioner references unknown command', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.defaultExecutioner = 'zz';
+    expect(() => validateLlmConfig(cfg)).toThrow(/defaultExecutioner.*zz/);
+  });
+
+  it('throws when env is not an object', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    (cfg.commands.a as any).env = 'not-an-object';
+    expect(() => validateLlmConfig(cfg)).toThrow(/env must be an object/);
+  });
+
+  it('throws when env value is not a string', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    (cfg.commands.a as any).env = { KEY: 42 };
+    expect(() => validateLlmConfig(cfg)).toThrow(/env\.KEY must be a string/);
+  });
+
+  it('throws on unknown allowedSubcommand with suggestion', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.commands.a.allowedSubcommands = ['paln'];
+    expect(() => validateLlmConfig(cfg)).toThrow(/allowedSubcommands.*paln.*did you mean 'plan'/);
+  });
+
+  it('throws on unknown disallowedSubcommand', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.commands.a.disallowedSubcommands = ['nope'];
+    expect(() => validateLlmConfig(cfg)).toThrow(/disallowedSubcommands.*nope/);
+  });
+
+  it('throws on executionerEscalation referencing missing command', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.executionerEscalation = ['missing'];
+    expect(() => validateLlmConfig(cfg)).toThrow(/executionerEscalation\[0\].*"missing" does not exist/);
+  });
+
+  it('throws when executionerEscalation command does not allow implement', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.commands.a.allowedSubcommands = ['plan'];
+    cfg.executionerEscalation = ['a'];
+    expect(() => validateLlmConfig(cfg)).toThrow(/does not allow implement/);
+  });
+
+  it('throws when executionerEscalation is not an array', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    (cfg as any).executionerEscalation = 'not-an-array';
+    expect(() => validateLlmConfig(cfg)).toThrow(/executionerEscalation must be an array/);
+  });
+
+  it('throws on unknown hook lifecycle phase', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = { lifecycle: { 'bogus-phase': [] as any } } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/Unknown lifecycle phase/);
+  });
+
+it('throws on unknown event name with suggestion', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = { events: { 'run.startd': [{ command: 'echo' }] } } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/Unknown event type.*did you mean 'run\.started'/);
+  });
+
+  it('throws when post-plan hook has onFailure retry', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: { 'post-plan': [{ command: 'echo', onFailure: 'retry' } as any] },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/post-plan hooks cannot have onFailure: 'retry'/);
+  });
+
+  it('throws when pre-hook has neither instructions nor command', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = { lifecycle: { 'pre-task': [{} as any] } } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/must have either 'instructions' or 'command'/);
+  });
+
+  it('throws when post-task-file hook has no match glob', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: { 'post-task-file': [{ command: 'echo' } as any] },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/must have a 'match' glob pattern/);
+  });
+
+  it('throws when runOnSurprise is not a boolean', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', runOnSurprise: 'true' } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/runOnSurprise must be a boolean/);
+  });
+
+  it('throws when runOnSurprise is set on non post-task-file phase', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'pre-task-file': [
+          { command: 'echo', match: '**/*.ts', runOnSurprise: true } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/runOnSurprise is only valid on post-task-file hooks/);
+  });
+
+  it('accepts runOnSurprise=true on a post-task-file hook', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', runOnSurprise: true } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).not.toThrow();
+  });
+
+  it('throws when event hook has no command', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = { events: { 'run.started': [{} as any] } } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/event hook.*must have a 'command' property/);
+  });
+
+  it('throws when shell:false hook has a string command', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo hi', match: '**/*.ts', shell: false } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/when shell:false, command must be a non-empty string\[\]/);
+  });
+
+  it('throws when shell:true (default) hook has an array command', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: ['echo', 'hi'], match: '**/*.ts' } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/when shell:true \(default\), command must be a string/);
+  });
+
+  it('accepts shell:false with a valid string[] command', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: ['node', '-e', '1'], match: '**/*.ts', shell: false } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).not.toThrow();
+  });
+
+  it('accepts default (no shell) with a string command', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo hi', match: '**/*.ts' } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).not.toThrow();
+  });
+
+  it('throws when shell:false has an empty array command', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: [], match: '**/*.ts', shell: false } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/non-empty string\[\]/);
+  });
+
+  it('throws when shell is not a boolean', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', shell: 'false' } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/shell must be a boolean/);
+  });
+
+  it('accepts a valid retry config', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', retry: { maxAttempts: 3, backoffMs: 50, jitter: 0.2 } } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).not.toThrow();
+  });
+
+  it('throws when retry.maxAttempts is below 1', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', retry: { maxAttempts: 0, backoffMs: 10 } } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/retry\.maxAttempts must be an integer in \[1, 20\]/);
+  });
+
+  it('throws when retry.maxAttempts is above 20', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', retry: { maxAttempts: 99, backoffMs: 10 } } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/retry\.maxAttempts must be an integer in \[1, 20\]/);
+  });
+
+  it('throws when retry.backoffMs is negative', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', retry: { maxAttempts: 3, backoffMs: -5 } } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/retry\.backoffMs must be a non-negative integer/);
+  });
+
+  it('throws when retry.jitter is outside [0, 1]', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', retry: { maxAttempts: 3, backoffMs: 10, jitter: 1.5 } } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/retry\.jitter must be a number in \[0, 1\]/);
+  });
+
+  it('throws when retry is not an object', async () => {
+    const { validateLlmConfig } = await import('../../src/lib/ConfigManager.js');
+    const cfg = BASE();
+    cfg.hooks = {
+      lifecycle: {
+        'post-task-file': [
+          { command: 'echo', match: '**/*.ts', retry: 'yes' } as any,
+        ],
+      },
+    } as any;
+    expect(() => validateLlmConfig(cfg)).toThrow(/retry must be an object/);
+  });
+});

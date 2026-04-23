@@ -71,12 +71,49 @@ Lifecycle hooks are checkpoints during task execution where you can inject custo
 
 Each hook in `hooks.lifecycle` can specify:
 
-- **`command`** (string, optional for pre-* phases) - Shell command to execute
+- **`command`** (string or string[], optional for pre-* phases) - The command to execute. Type depends on `shell`:
+  - `shell: true` (default) → `command: string` passed to `/bin/sh -c`.
+  - `shell: false` → `command: string[]` spawned directly; `argv[0]` is the executable.
+- **`shell`** (boolean, optional, default `true`) - Execution mode. Argv mode (`shell: false`) bypasses the shell and the path-safety check entirely.
 - **`instructions`** (string, optional) - For pre-* phases without a command; describes what to do (for LLM consumption)
 - **`match`** (string, required for `pre-task-file` / `post-task-file`) - Glob pattern for file matching (e.g., `src/**/*.ts`)
 - **`action`** (string, optional) - For `*-task-file` phases: `"create"`, `"edit"`, or `"delete"`
+- **`runOnSurprise`** (boolean, optional, `post-task-file` only, default `false`) - When `true`, the hook fires on paths classified as `surprise` (written but not declared). See trust-boundary docs.
 - **`timeoutMs`** (number, optional) - Timeout in milliseconds (default: 30000)
 - **`onFailure`** (string, optional) - What to do if hook fails: `"warn"`, `"retry"`, or `"abort"` (default: `"warn"`)
+
+### Template Placeholders
+
+`command` strings (shell mode) and every element of `command` arrays (argv mode) are run through placeholder substitution at dispatch time. Unknown tokens are left untouched. Unset fields become the empty string.
+
+| Placeholder | Value |
+|---|---|
+| `{file}` | Posix-style path of the file being hooked (empty for plan-level / task-level phases) |
+| `{path}` | Alias of `{file}` |
+| `{action}` | `create` \| `edit` \| `delete` (empty when no file) |
+| `{classification}` | `declared` \| `surprise` \| `churn` (empty when not file-scoped) |
+| `{sessionId}` | Session id for the run |
+| `{taskId}` | Task id (empty for plan-level phases) |
+| `{attempt}` | Retry-loop attempt number (empty when not applicable) |
+| `{root}` | The hook's `cwd`, posix-normalized |
+
+The legacy `DEVFLOW_*` environment variables (`DEVFLOW_SESSION_ID`, `DEVFLOW_CWD`, `DEVFLOW_FILE_PATH`, `DEVFLOW_FILE_ACTION`) remain set in both modes for back-compat.
+
+### Path-safety (shell mode)
+
+In shell mode, if a command string contains `{file}` or `{path}` and the underlying file path contains shell metacharacters outside the safe charset `[A-Za-z0-9._/\-@+=,~:]`, the hook is **skipped** for that file. A `HookFailure` with `stderr: "skipped: path-injection-risk"` is recorded on the attempt for post-hooks; pre-hooks emit a `console.warn`. Other hooks in the chain continue unaffected.
+
+Argv mode (`shell: false`) is not subject to this check — argv strings are not word-split or shell-expanded, so any bytes are safe to pass.
+
+If you need to operate on arbitrary filenames from a post-task-file hook, use argv mode:
+
+```json
+{
+  "match": "**/*",
+  "shell": false,
+  "command": ["./scripts/lint.sh", "{file}"]
+}
+```
 
 ### Example Lifecycle Hook Configuration
 
@@ -101,9 +138,15 @@ Each hook in `hooks.lifecycle` can specify:
       "post-task-file": [
         {
           "match": "src/**/*.ts",
-          "command": "npx eslint {{file}}",
+          "command": "npx eslint {file}",
           "timeoutMs": 10000,
           "onFailure": "retry"
+        },
+        {
+          "match": "**/*.sh",
+          "shell": false,
+          "command": ["./scripts/shellcheck.sh", "{file}"],
+          "runOnSurprise": true
         }
       ]
     }

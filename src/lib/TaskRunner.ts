@@ -12,6 +12,8 @@ import { HookDispatcher, type HooksConfig } from './HookDispatcher.js';
 import { WorkerPool } from './WorkerPool.js';
 import { WriteLock } from './WriteLock.js';
 import type { CommandResolver } from './CommandResolver.js';
+import { captureBaseline, reconcile, classify, type Baseline } from './WorkspaceReconciler.js';
+import type { TaskManifest } from './SessionManager.js';
 
 export interface TaskRunnerInput {
   planFilePath: string;
@@ -26,6 +28,13 @@ export interface TaskRunnerInput {
   hooksConfig?: HooksConfig;
   sessionId?: string;
   manifestWriteLock?: WriteLock;
+  /**
+   * Max concurrent `post-task-file` hook dispatches ACROSS files within a
+   * single task. Hooks for the same file are still serialized by `PathLock`
+   * inside `HookDispatcher`. Default `4`: conservative enough for typical
+   * laptop-bound hook IO (linters, formatters) without thrashing. Set to `1`
+   * for strict sequential behavior equivalent to pre-Step-6.
+   */
   concurrency?: number;
 }
 
@@ -46,6 +55,12 @@ export interface HookFailure {
   durationMs: number;
   onFailure?: 'retry' | 'warn' | 'abort';
   category: 'hook' | 'verify' | 'executor-crash';
+  /**
+   * Populated by per-hook retry (§Step 6) when `LifecycleHookConfig.retry` is
+   * set. Number of attempts actually made (>=1). Absent for hooks without
+   * retry, and for categories other than 'hook'.
+   */
+  hookRetryCount?: number;
 }
 
 export interface Attempt {
@@ -75,6 +90,7 @@ export interface RunManifest {
   endedAt: string | null;
   status: 'running' | 'completed' | 'aborted' | 'partial';
   tasks: TaskState[];
+  taskManifests: Record<string, TaskManifest>;
 }
 
 export class TaskRunner {
@@ -140,7 +156,9 @@ export class TaskRunner {
         startedAt: null,
         endedAt: null,
       })),
+      taskManifests: {},
     };
+    if (!manifest.taskManifests) manifest.taskManifests = {};
 
     // Build set of completed task IDs for idempotency
     const completedTasks = new Set<string>(
@@ -153,6 +171,9 @@ export class TaskRunner {
     // hookDispatcher already created above for pre-plan hook
     const manifestWriteLock = input.manifestWriteLock ?? new WriteLock();
     const sessionId = input.sessionId ?? runId;
+    // Default: 4 concurrent post-task-file hook dispatches across files.
+    // Same-file hooks are still serialized by the PathLock inside HookDispatcher.
+    const concurrency = input.concurrency ?? 4;
 
     // Fire post-plan hook (after plan is fully prepared, before tasks execute)
     try {
@@ -210,6 +231,27 @@ export class TaskRunner {
         }
       } catch (error) {
         console.warn(`Pre-task hook failed for ${task.id}:`, error);
+      }
+
+      // Capture workspace baseline (single root = task cwd, git-only for Step 1).
+      // On non-git cwd, log+skip and leave manifest empty — reconciliation is
+      // a no-op in that case. Non-git roots arrive in Step 4 with the watcher.
+      let baseline: Baseline | null = null;
+      try {
+        baseline = await captureBaseline(input.cwd);
+        await input.logger.append({
+          sessionId,
+          type: 'workspace.baseline.captured',
+          timestamp: new Date().toISOString(),
+          taskId: task.id,
+          root: input.cwd,
+          vcs: 'git',
+          ref: baseline.head,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.warn(`Baseline capture failed for ${task.id}: ${msg}`);
+        baseline = null;
       }
 
       // Retry loop
@@ -343,26 +385,109 @@ export class TaskRunner {
             });
           }
 
-          // Fire post-task-file hooks for each declared file
-          for (const fileSpec of task.files) {
-            try {
-              const postFileFailures = await hookDispatcher.runPost('post-task-file', {
-                plan,
-                task,
-                file: fileSpec,
-                attempt,
-                sessionId,
-                cwd: input.cwd,
-                previousFailures: attemptRecord.hookFailures,
-              });
-              attemptRecord.hookFailures.push(...postFileFailures);
-            } catch (error) {
-              if (error instanceof Error && (error.message.includes('aborted') || error.message.includes('Abort'))) {
-                throw error;
-              }
-              console.warn(`Post-task-file hook failed for ${fileSpec.path}:`, error);
-            }
+          // Reconcile the workspace against the pre-task baseline and classify
+          // every net-changed path as declared|surprise|churn. Hooks then fire
+          // on the RECONCILED set, not the declared manifest — closing the
+          // §11 trust boundary. Falls back to the declared manifest only when
+          // baseline capture failed (non-git cwd in Step 1).
+          const classified: { declared: { path: string; action: 'create' | 'edit' | 'delete' }[]; surprise: { path: string; action: 'create' | 'edit' | 'delete' }[]; churn: { path: string; action: 'create' | 'edit' | 'delete' }[] } = baseline
+            ? classify(await reconcile(input.cwd, baseline), task.files, [])
+            : { declared: task.files.map((f) => ({ path: f.path, action: f.action })), surprise: [], churn: [] };
+
+          for (const p of classified.declared) {
+            await input.logger.append({
+              sessionId,
+              type: 'task.file.declared',
+              timestamp: new Date().toISOString(),
+              taskId: task.id,
+              root: input.cwd,
+              path: p.path,
+              action: p.action,
+              via: 'reconcile',
+            });
           }
+          for (const p of classified.surprise) {
+            await input.logger.append({
+              sessionId,
+              type: 'task.file.surprise',
+              timestamp: new Date().toISOString(),
+              taskId: task.id,
+              root: input.cwd,
+              path: p.path,
+              action: p.action,
+              via: 'reconcile',
+            });
+          }
+          for (const p of classified.churn) {
+            await input.logger.append({
+              sessionId,
+              type: 'task.file.churn',
+              timestamp: new Date().toISOString(),
+              taskId: task.id,
+              root: input.cwd,
+              path: p.path,
+              action: p.action,
+            });
+          }
+          await input.logger.append({
+            sessionId,
+            type: 'workspace.reconciled',
+            timestamp: new Date().toISOString(),
+            taskId: task.id,
+            root: input.cwd,
+            declared: classified.declared.length,
+            surprise: classified.surprise.length,
+            churn: classified.churn.length,
+          });
+
+          manifest.taskManifests[task.id] = {
+            declared: classified.declared,
+            surprise: classified.surprise,
+            churn: classified.churn,
+          };
+
+          // Fire post-task-file hooks for declared ∪ surprise paths. Dispatch
+          // fans out across files via WorkerPool (concurrency N); per-file
+          // serialization of matching hooks is guaranteed by the PathLock
+          // inside HookDispatcher.runPost. Failure ordering is restored to
+          // dispatchSet order after Promise.all so concurrency=1 is
+          // behaviorally identical to the pre-Step-6 sequential loop.
+          const dispatchSet: { file: { path: string; action: 'create' | 'edit' | 'delete' }; classification: 'declared' | 'surprise' }[] = [
+            ...classified.declared.map((f) => ({ file: { path: f.path, action: f.action }, classification: 'declared' as const })),
+            ...classified.surprise.map((f) => ({ file: { path: f.path, action: f.action }, classification: 'surprise' as const })),
+          ];
+          const pool = new WorkerPool<{ index: number; failures: HookFailure[]; abortError?: Error }>(Math.max(1, concurrency));
+          let abortError: Error | null = null;
+          const pooled = dispatchSet.map((item, index) =>
+            pool.enqueue(async () => {
+              try {
+                const failures = await hookDispatcher.runPost('post-task-file', {
+                  plan,
+                  task,
+                  file: item.file,
+                  attempt,
+                  sessionId,
+                  cwd: input.cwd,
+                  previousFailures: attemptRecord.hookFailures,
+                  classification: item.classification,
+                });
+                return { index, failures };
+              } catch (error) {
+                if (error instanceof Error && (error.message.includes('aborted') || error.message.includes('Abort'))) {
+                  return { index, failures: [], abortError: error };
+                }
+                console.warn(`Post-task-file hook failed for ${item.file.path}:`, error);
+                return { index, failures: [] };
+              }
+            }),
+          );
+          const results = await Promise.all(pooled);
+          results.sort((a, b) => a.index - b.index);
+          for (const r of results) {
+            if (r.abortError && !abortError) abortError = r.abortError;
+            attemptRecord.hookFailures.push(...r.failures);
+          }
+          if (abortError) throw abortError;
 
           attemptRecord.endedAt = new Date().toISOString();
           taskState.attempts.push(attemptRecord);

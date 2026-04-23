@@ -1,0 +1,10 @@
+{
+  "default": "nope",
+  "commands": {
+    "ls-test": {
+      "command": "ls -la",
+      "allowedSubcommands": [],
+      "disallowedSubcommands": []
+    }
+  }
+}

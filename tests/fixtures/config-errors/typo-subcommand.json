@@ -1,0 +1,10 @@
+{
+  "default": "test-cli",
+  "commands": {
+    "test-cli": {
+      "command": "echo test",
+      "allowedSubcommands": ["paln"],
+      "disallowedSubcommands": []
+    }
+  }
+}

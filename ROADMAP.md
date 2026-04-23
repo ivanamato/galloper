@@ -32,6 +32,13 @@ This document tracks areas galloper is actively exploring. Each section lists th
 
 **Intent.** galloper's surface area — commands, hooks, events, model tiers, retrieval backends — is small today and will keep growing. Writing a correct `galloper.json` by hand is already non-trivial and will get worse. A first-run experience should **make the easy path genuinely easy**: detect what the user has installed, propose a sensible default config, explain the available knobs in context, and let power users drop back to hand-editing at any point. Onboarding is not a nice-to-have; for an alpha tool asking users to trust it with code, it is the difference between being tried and being ignored.
 
+**Status (2026-04-22).** Implementation plan tracked in [`docs/ONBOARDING_PLAN.md`](docs/ONBOARDING_PLAN.md). Shipping order: **B → D → A → C**.
+
+- ✅ **B — `galloper doctor`** shipped. `src/lib/Doctor.ts` validates defaults, PATH lookups for each command's first token, allowed/disallowed subcommand lists, hook event names, and hook glob syntax. CLI branch at `src/run-llm-session.ts`; exit `0` on clean / `1` on any error; structured `{errors, warnings}` JSON on stdout. Unit + integration tests in place; no new runtime deps.
+- ✅ **D — In-flow discovery** shipped. `src/lib/Suggest.ts` exposes a zero-dependency `nearest()` (Levenshtein, length-scaled threshold, suppressed on exact match). Wired into the CLI's unknown-subcommand path, `ConfigManager` validation (defaultPlanner, defaultExecutioner, allowed/disallowed subcommands, unknown hook events, unknown command via `getCommand`), and every `Doctor` check. Additive `(did you mean 'x'?)` suffix; silent when no candidate is close enough.
+- ✅ **A — `galloper init`** shipped. `src/lib/Init.ts` detects `claude` / `codex` / `gemini` on `$PATH`, prompts interactively (or accepts `--non-interactive`), round-trips through the now-pure `validateLlmConfig` before writing, and uses an atomic tmp+rename with unlink-on-failure. TTY-aware; refuses overwrite without `--force`. Prompt layer is a thin `Prompter` interface over `node:readline` (no framework) — reusable by the future TUI.
+- ⏸ **C — Template starters** deferred until §10 (Reference Project Examples) lands at least one real example. Templates without backing reference projects would be decorative; the dependency is explicit in the plan.
+
 **Design constraints.**
 - Must never silently write an unusable config. Anything generated must validate against the same loader that runs at execution time.
 - Must be **non-destructive**. If a `galloper.json` already exists, onboarding augments or diffs — it does not overwrite without explicit consent.
@@ -40,18 +47,18 @@ This document tracks areas galloper is actively exploring. Each section lists th
 
 **Scope sketch.**
 
-- **`galloper init`** — scaffold a `galloper.json` by detecting installed LLM CLIs (Claude Code, Codex, Gemini CLI, others), asking which to wire up, and picking sensible defaults for `default` / `defaultPlanner` / `defaultExecutioner`.
-- **`galloper doctor`** — validate the current config against the binaries, paths, and environment it references; report missing commands, unresolvable subcommand restrictions, broken hook globs, and invalid event names with a clear fix for each.
-- **Template starters** — a minimal set of `galloper init --template <name>` presets tied to the reference project examples (see §10), so a React or Go project can start with a hook suite that already makes sense.
-- **In-flow discovery** — when a user runs an unknown subcommand, mistypes a command name, or references an undefined hook phase, surface the nearest valid option and a link to the relevant doc rather than a bare stack trace.
+- **`galloper init`** *(shipped — milestone A)* — scaffolds a `galloper.json` by detecting installed LLM CLIs (`claude`, `codex`, `gemini`), asking which to wire up, and picking a sensible `default`. `defaultPlanner` / `defaultExecutioner` are left unset for now (fall back to `default`).
+- **`galloper doctor`** *(shipped — milestone B)* — validates the current config against the binaries, paths, and environment it references; reports missing commands, unresolvable subcommand restrictions, broken hook globs, and invalid event names with a clear fix for each.
+- **Template starters** *(deferred pending §10 — milestone C)* — a minimal set of `galloper init --template <name>` presets tied to the reference project examples (see §10), so a React or Go project can start with a hook suite that already makes sense.
+- **In-flow discovery** *(shipped — milestone D)* — when a user runs an unknown subcommand, mistypes a command name, or references an undefined hook phase, surfaces the nearest valid option rather than a bare stack trace.
 
 **Open questions.**
-- Is `init` a subcommand of `galloper` or a separate companion binary? Bundled is simpler for users; separate keeps the core tight.
+- Is `init` a subcommand of `galloper` or a separate companion binary? Bundled is simpler for users; separate keeps the core tight. *(Plan resolves to bundled; revisit if the `init` surface grows.)*
 - How aggressive should auto-detection be? Does galloper shell out to each candidate CLI to check versions, or only look for binaries on `$PATH`? Version drift is a real failure mode.
 - What's the split between `init` (one-shot) and an ongoing configuration UI in the TUI? The cleanest answer is probably that `init` is a scripted path through the same components the TUI exposes continuously.
 - Should onboarding ever write to anything outside the repo (a user-level default, a shell completion file, an editor snippet)? If yes, it must be explicit and reversible.
 - How are templates versioned and kept current as the hook/event surface evolves? Same CI pressure as the reference examples (§10).
-- For `doctor`, what's the right severity model — errors/warnings/info, or a single pass/fail? The project's "loud failures are a feature" stance suggests erring toward errors by default.
+- ~~For `doctor`, what's the right severity model — errors/warnings/info, or a single pass/fail?~~ *(Resolved: `{errors, warnings}` split, non-zero exit only on errors — matches the project's "loud failures are a feature" stance.)*
 
 ---
 

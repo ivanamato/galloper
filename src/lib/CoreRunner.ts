@@ -28,6 +28,7 @@ export class CoreRunner {
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
     const startedAt = new Date(startedAtMs).toISOString();
+    const pendingLogs: Promise<void>[] = [];
 
     await options.logger.append({
       sessionId: options.sessionId,
@@ -48,27 +49,27 @@ export class CoreRunner {
       child.stdout.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         stdoutChunks.push(text);
-        void options.logger.append({
+        pendingLogs.push(options.logger.append({
           sessionId: options.sessionId,
           type: 'process.stdout',
           timestamp: new Date().toISOString(),
           chunk: text,
           minLevel: 3,
           message: `[subprocess] stdout: ${text.substring(0, 80).replace(/\n/g, '\\n')}${text.length > 80 ? '...' : ''}`,
-        });
+        }).catch(() => {}));
       });
 
       child.stderr.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         stderrChunks.push(text);
-        void options.logger.append({
+        pendingLogs.push(options.logger.append({
           sessionId: options.sessionId,
           type: 'process.stderr',
           timestamp: new Date().toISOString(),
           chunk: text,
           minLevel: 3,
           message: `[subprocess] stderr: ${text.substring(0, 80).replace(/\n/g, '\\n')}${text.length > 80 ? '...' : ''}`,
-        });
+        }).catch(() => {}));
       });
 
       child.on('error', (error: Error) => {
@@ -77,15 +78,17 @@ export class CoreRunner {
 
       child.on('close', (code: number | null) => {
         const endedAt = new Date().toISOString();
-        resolve({
-          stdout: stdoutChunks.join(''),
-          stderr: stderrChunks.join(''),
-          exitCode: code ?? 1,
-          startedAt,
-          endedAt,
-          durationMs: Date.now() - startedAtMs,
-          parsedStdoutEvents: CoreRunner.parseJsonLines(stdoutChunks.join('')),
-          parsedStderrEvents: CoreRunner.parseJsonLines(stderrChunks.join('')),
+        Promise.all(pendingLogs).finally(() => {
+          resolve({
+            stdout: stdoutChunks.join(''),
+            stderr: stderrChunks.join(''),
+            exitCode: code ?? 1,
+            startedAt,
+            endedAt,
+            durationMs: Date.now() - startedAtMs,
+            parsedStdoutEvents: CoreRunner.parseJsonLines(stdoutChunks.join('')),
+            parsedStderrEvents: CoreRunner.parseJsonLines(stderrChunks.join('')),
+          });
         });
       });
 
