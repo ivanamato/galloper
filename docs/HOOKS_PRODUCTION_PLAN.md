@@ -4,6 +4,9 @@
 
 **Implemented.**
 - **Step 1 — workspace-aware detection (git-only, single-root).** Baseline capture + porcelain-v2 reconciliation + declared/surprise/churn classification; `post-task-file` hooks fire on the reconciled set with `runOnSurprise` gating; per-task classified manifests persist on `RunManifest.taskManifests`. Events: `task.file.declared`, `task.file.surprise`, `task.file.churn`, `workspace.baseline.captured`, `workspace.reconciled`. See `src/lib/WorkspaceReconciler.ts` and `tests/integration/trust-boundary.test.ts`.
+- **Step 3 (slices C + D) — multi-root reconciliation + out-of-workspace classification.** Cite TaskRunner.ts:462-466, TaskRunner.ts:593-596, TaskRunner.ts:599-605. Note fixtures #4 and #6 not independently verified.
+- **Step 4 — watcher + quiesce gate + authoritative churn + dropped.** Cite TaskRunner.ts:253-258, 283-303, 462-528, 494-517, 530-544, 546-561, 563-591, ConfigManager.ts:199-211. Note fixtures #2, #3, #9 not independently verified.
+- **Step 8 (half) — --dry-run-hooks landed (DryRunHooks.ts, run-llm-session.ts:12, 246, tests/integration/dry-run-hooks.test.ts).** Hook test harness not landed.
 - **Step 5 — command ergonomics + safety.** Template substitution (`{file}`, `{path}`, `{action}`, `{classification}`, `{sessionId}`, `{taskId}`, `{attempt}`, `{root}`), `shell: false` argv mode, shell-mode path-injection gating. See `src/lib/HookTemplate.ts`.
 - **Step 6 — scale.** Per-path `PathLock` (same-file hooks serialize, different files run concurrently), `WorkerPool`-backed fan-out in `TaskRunner` (default concurrency 4, `concurrency: 1` preserves the pre-pool ordering invariant), `retry: { maxAttempts, backoffMs, jitter }` on hook entries. See `src/lib/PathLock.ts` and `tests/integration/hook-*.test.ts`.
 - **Step 9 — safety net.** `DestructivePatterns` validator scan with `destructive: true` acknowledgement, `AbortHookError` carrying the aborting hook's index, `onAbort: 'revert' | 'keep'` on post-task-file hooks, `revertToBaseline` (destructive-by-design), `workspace.reverted` event. Baseline capture is now **read-only** via `git stash create` — consult §5 "Step 9 caveats" for the incident that forced this design and the accepted v1 limitations (notably: untracked files at baseline are not restored on revert). Full safety guidance lives in `docs/EVENTS_AND_HOOKS.md`.
@@ -309,11 +312,9 @@ A hook writing `schema.generated.ts`, `tsbuildinfo`, snapshot files, etc. is **n
 **Now (Step 1).** Pre-task, `TaskRunner` calls `WorkspaceReconciler.captureBaseline(cwd)` and records the git HEAD + porcelain-v2 snapshot. After the verify block, it calls `reconcile` (net-changed paths relative to baseline) and `classify` (declared ∪ surprise ∪ churn). `post-task-file` hooks now iterate `declared ∪ surprise`, with `runOnSurprise` gating inside `HookDispatcher.runPost`. Declared manifest is no longer the source of truth — an LLM writing `scripts/release.sh` without declaring it now surfaces as `task.file.surprise` and is routed to any hook with `runOnSurprise: true`.
 
 **Still missing (later steps).**
-- Watcher layer for gitignored writes and non-git roots (§2.5, Step 4).
-- Multi-root / workspace config (§2.1, Step 3).
-- `out-of-workspace` classification + abort (§2.8, Step 3).
-- Quiesce gate + `workspace.noisy` (§2.4, Step 4).
-- Authoritative churn detection (requires the watcher; Step 4). Write-then-revert currently falls out of reconciliation as an empty set — correct by byproduct, not by design.
+- Non-git workspace roots: `vcs: "none"` reconciliation (§2.1, Step 3).
+- Authoritative churn detection: watcher-sourced emission (TaskRunner.ts:546-561); 'correct by byproduct' caveat no longer applies.
+- Fixture-level acceptance: scenarios #2 (gitignored write), #3 (watcher drop), #4 (multi-root), #6 (out-of-workspace abort), #9 (quiesce-gate failure).
 
 **Non-git cwd.** `captureBaseline` throws; `TaskRunner` logs a warning and falls back to the pre-Step-1 behavior (iterate `task.files`). Acceptable for Step 1 because the production use case is a git workspace; a proper `workspace.roots` + non-git reconciliation story arrives with Steps 3–4.
 
@@ -390,18 +391,18 @@ Doctor.ts today: glob syntax (:35-55), event name membership (:8-29), binary-on-
 
 ## 5. Implementation Sequencing
 
-Minimum viable production-ready = steps 1, 2, 5, 6, 9. Everything else separates "works" from "debuggable and trusted."
+Minimum viable production-ready = steps 1, 2, 5, 6, 9 — all landed. Steps 3 and 4 are wired but fixture-level acceptance is pending (see §1.2). Steps 7, 8 (harness half), and 10 remain the gap between "works" and "debuggable and trusted."
 
 | # | Step | Size | Unlocks | Status |
 |---|---|---|---|---|
 | 1 | Baseline capture + git-diff reconciliation, single-root | M | Trust boundary closed for 80% case | **done** — `WorkspaceReconciler.ts`, 17 unit + 6 integration tests |
 | 2 | Classification + `runOnSurprise` + new events (`task.file.declared`, `.surprise`, `.churn`, `workspace.baseline.captured`, `.reconciled`) | S | Hooks can actually defend | **done** as part of Step 1; `out-of-workspace` deferred to Step 3 |
-| 3 | Workspace roots config + Doctor validation for roots + `out-of-workspace` classification | M | Multi-repo story | **partial** — slice A (commit `9abcee1`): `WorkspaceRoot` / `WorkspaceConfig` types + `validateLlmConfig` shape checks + 17 validator tests. Slice B (commit `039b583`): Doctor `WORKSPACE_ROOT_MISSING` / `WORKSPACE_ROOT_VCS_MISMATCH` checks + 6 Doctor tests + CLAUDE.md error-code docs. Still pending: slice C (wire roots into `captureBaseline` / `reconcile` for multi-root), slice D (`task.file.out-of-workspace` classification + abort semantics + events). |
-| 4 | Watcher layer + quiesce gate + `workspace.noisy` event + authoritative churn | M | Non-git coverage, real-time UX hooks, gitignored-write detection | pending |
+| 3 | Workspace roots config + Doctor validation for roots + `out-of-workspace` classification | M | Multi-repo story | **wired, acceptance pending** — describe slices A (commit 9abcee1), B (commit 039b583), C (TaskRunner.ts:462-466), D (TaskRunner.ts:593-605). Note #4, #6 not independently verified; non-git vcs: 'none' still pending. |
+| 4 | Watcher layer + quiesce gate + `workspace.noisy` event + authoritative churn | M | Non-git coverage, real-time UX hooks, gitignored-write detection | **wired, acceptance pending** — FileWatcher.ts (chokidar); quiesce gate (TaskRunner.ts:283-303); watcher × reconciliation merge (TaskRunner.ts:462-528); workspace.watcher.dropped (TaskRunner.ts:530-544); authoritative task.file.churn (TaskRunner.ts:546-561); gitignored writes → surprise (TaskRunner.ts:563-591); tests/unit/FileWatcher.test.ts. Note #2, #3, #9 not independently verified. |
 | 5 | Template substitution + argv mode + path validation | S | Security + ergonomics | **done** — `HookTemplate.ts`, `{file}`/`{path}`/`{action}`/`{classification}`/`{sessionId}`/`{taskId}`/`{attempt}`/`{root}` placeholders, `shell:false` argv mode, path-injection gating |
 | 6 | Parallel execution with per-path write lock + retry-with-backoff | M | Scale | **done** — `PathLock.ts` (per-file serialization), `WorkerPool` fan-out in TaskRunner (default concurrency=4), `retry: { maxAttempts, backoffMs, jitter }` on hook entries |
 | 7 | Per-hook `hookInvocationId` + timing + decision trace | S | Debuggability | pending |
-| 8 | Hook test harness + `--dry-run-hooks` | S | Dev loop for hook authors | pending |
+| 8 | Hook test harness + `--dry-run-hooks` | S | Dev loop for hook authors | **half** — --dry-run-hooks landed (DryRunHooks.ts, run-llm-session.ts:12, 246, tests/integration/dry-run-hooks.test.ts). Hook test harness pending. |
 | 9 | Destructive-hook gating + `onAbort` rollback | S | Safety net | **done** — `DestructivePatterns.ts` + validator, `AbortHookError` with `hookIndex`, `captureBaseline` via `git stash create` (read-only), `revertToBaseline`, `workspace.reverted` event. See "Step 9 caveats" below. |
 | 10 | Event payload schemas + MCP projection | M | Production-grade observability | pending |
 
@@ -436,14 +437,14 @@ All land on the existing event bus (`hooks.events`), no new lifecycle phases.
 |---|---|---|---|
 | `task.file.declared` | classified as declared | `{ root, path, action, via }` | **live** (Step 1) |
 | `task.file.surprise` | in-workspace, not declared | `{ root, path, action, via }` | **live** (Step 1) |
-| `task.file.out-of-workspace` | outside all roots | `{ path, via }` | pending (Step 3) |
-| `task.file.churn` | written and reverted | `{ root, path, events }` | type registered; only fires on caller-supplied churn list today — authoritative firing needs the watcher (Step 4) |
-| `workspace.noisy` | pre-task quiesce failed | `{ roots, sampleEvents }` | pending (Step 4) |
-| `workspace.watcher.dropped` | reconciliation caught what watcher missed | `{ root, path, count }` | pending (Step 4) |
+| `task.file.out-of-workspace` | outside all roots | `{ path, root, label }` | **live (Step 3D)** — emitted at TaskRunner.ts:593-605 with payload `{ path, root, label, action }`. Acceptance fixture #6 not independently verified. |
+| `task.file.churn` | written and reverted | `{ root, label, path, action }` | **live (Step 4)** — authoritative emission from watcher-only net-zero partition at TaskRunner.ts:546-561, payload `{ root, label, path, action }`. |
+| `workspace.noisy` | pre-task quiesce failed | `{ root, label, quiesceMs, quiesceTimeoutMs, sampleEventCount }` | **live (Step 4)** — emitted at TaskRunner.ts:283-303 when waitForIdle exceeds quiesceTimeoutMs. Acceptance fixture #9 not independently verified. |
+| `workspace.watcher.dropped` | reconciliation caught what watcher missed | `{ root, label, path, action }` | **live (Step 4)** — emitted at TaskRunner.ts:530-544 for paths reconciliation found that the watcher missed. |
 | `workspace.baseline.captured` | after baseline | `{ root, vcs, ref?, hashCount? }` | **live** (Step 1) — payload is `{ taskId, root, vcs: "git", ref }` |
 | `workspace.reconciled` | after reconciliation | `{ root, declared, surprise, outOfWorkspace, churn }` | **live** (Step 1) — `outOfWorkspace` count absent until Step 3 |
 
-Every event payload includes `{ sessionId, taskId, root?, via?: "watcher" \| "reconcile" \| "both" }` for downstream routing. Step 1 always emits `via: "reconcile"`; the `watcher` and `both` variants arrive with Step 4.
+Every event payload includes `{ sessionId, taskId, root?, via?: "watcher" \| "reconcile" \| "both" }` for downstream routing. Step 1 always emits `via: "reconcile"`; the `watcher` and `both` variants arrive with Step 4. *Note: `via` discriminator not yet populated in event payloads for Step 4 events; follow-up tracked under Step 7 (observability).*
 
 ---
 

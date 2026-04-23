@@ -43,6 +43,13 @@ export interface TaskRunnerInput {
    * single root at `{ path: cwd, vcs: 'git', label: 'main' }`.
    */
   workspaceRoots?: WorkspaceRoot[];
+  /**
+   * Workspace-level watcher ignore patterns from `workspace.ignore` in config.
+   * Layered on top of FileWatcher's built-in noise list and any per-root
+   * ignores. Required to run galloper in its own repo or any workspace with
+   * app-specific noise beyond the built-in defaults.
+   */
+  workspaceIgnore?: string[];
 }
 
 export interface FileSpec {
@@ -253,7 +260,7 @@ export class TaskRunner {
       // Start FileWatcher to detect background activity (Step 4)
       const fileWatcher = new FileWatcher();
       try {
-        await fileWatcher.start(rootsToTrack, {});
+        await fileWatcher.start(rootsToTrack, { ignore: input.workspaceIgnore ?? [] });
       } catch (error) {
         console.warn('FileWatcher startup warning:', error);
       }

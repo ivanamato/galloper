@@ -345,6 +345,7 @@ export class Orchestrator {
         sessionId,
         concurrency: input.concurrency,
         workspaceRoots: this.configManager.getWorkspace()?.roots,
+        workspaceIgnore: this.configManager.getWorkspace()?.ignore,
       });
 
       const durationMs = Date.now() - new Date(startedAt).getTime();
@@ -488,6 +489,7 @@ export class Orchestrator {
         sessionId,
         concurrency: input.concurrency,
         workspaceRoots: this.configManager.getWorkspace()?.roots,
+        workspaceIgnore: this.configManager.getWorkspace()?.ignore,
       });
 
       const durationMs = Date.now() - new Date(startedAt).getTime();

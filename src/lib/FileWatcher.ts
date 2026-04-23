@@ -103,6 +103,10 @@ export class FileWatcher {
       '.cache/**',
       'dist',
       'dist/**',
+      '.git',
+      '.git/**',
+      'galloper-data',
+      'galloper-data/**',
       '*.tsbuildinfo',
       '*.swp',
       '*.swo',
@@ -161,13 +165,11 @@ export class FileWatcher {
       }
     }
 
-    // Update last event time and reset idle waiter if present
+    // Update last event time. The idle waiter (if any) polls lastEventTime on
+    // its own schedule via checkIdle and will detect either the next quiet
+    // window or the hard timeout — do NOT clear its scheduled check here, or
+    // the Promise is orphaned and hangs forever on sustained noise.
     this.lastEventTime.set(rootLabel, timestamp);
-    const idleWaiter = this.idleWaiters.get(rootLabel);
-    if (idleWaiter) {
-      clearTimeout(idleWaiter.timeoutId);
-      this.idleWaiters.delete(rootLabel);
-    }
 
     // Invoke any waiters whose threshold is met
     const labelWaiters = this.waiters.get(rootLabel);

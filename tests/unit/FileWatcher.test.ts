@@ -363,4 +363,59 @@ describe('FileWatcher', () => {
       action: 'created',
     }));
   });
+
+  describe('waitForIdle', () => {
+    it('rejects within timeoutMs when noise never stops', async () => {
+      await watcher.start([{ path: repo.dir, label: 'root' }]);
+
+      // Sustained writer: fires a write every 50ms, well below quiesceMs=250,
+      // so the workspace never has a 250ms quiet window.
+      let stopNoise = false;
+      let i = 0;
+      const noisePromise = (async () => {
+        while (!stopNoise) {
+          await fs.writeFile(join(repo.dir, `noise-${i++}.txt`), 'x');
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      })();
+
+      const quiesceMs = 250;
+      const timeoutMs = 500;
+      const startedAt = Date.now();
+
+      try {
+        await expect(watcher.waitForIdle('root', quiesceMs, timeoutMs)).rejects.toThrow(
+          /Quiesce timeout exceeded/,
+        );
+      } finally {
+        stopNoise = true;
+        await noisePromise;
+        await watcher.stop();
+      }
+
+      // Must reject within timeoutMs + reasonable slack (fs ops + event plumbing).
+      // The orphaned-Promise bug caused this to hang indefinitely; 2s is a
+      // generous ceiling that still catches any re-regression.
+      const elapsed = Date.now() - startedAt;
+      expect(elapsed).toBeGreaterThanOrEqual(timeoutMs - 50);
+      expect(elapsed).toBeLessThan(2000);
+    });
+
+    it('resolves when the workspace quiets', async () => {
+      await watcher.start([{ path: repo.dir, label: 'root' }]);
+
+      try {
+        // Brief burst of writes, then silence.
+        await fs.writeFile(join(repo.dir, 'a.txt'), 'x');
+        await fs.writeFile(join(repo.dir, 'b.txt'), 'x');
+
+        const events = await watcher.waitForIdle('root', 200, 2000);
+        // Must resolve with the coalesced event set collected so far.
+        expect(events.some((e) => e.path === 'a.txt')).toBe(true);
+        expect(events.some((e) => e.path === 'b.txt')).toBe(true);
+      } finally {
+        await watcher.stop();
+      }
+    });
+  });
 });
