@@ -1,7 +1,14 @@
 {
-  "default": "claude-haiku",
-  "defaultPlanner": "claude-opus-high-effort",
-  "defaultExecutioner": "claude-haiku",
+  "default": "zai",
+  "defaultPlanner": "codex",
+  "defaultExecutioner": "zai",
+  "adaptive": {
+    "confidenceThreshold": 0.7,
+    "maxReplans": 5,
+    "diffMaxBytes": 32768,
+    "defaultEvaluator": "codex",
+    "defaultReplanner": "codex"
+  },
   "commands": {
     "codex": {
       "command": "codex exec --json --skip-git-repo-check -",
@@ -40,8 +47,8 @@
       "disallowedSubcommands": [],
       "env": {
         "ENABLE_LSP_TOOLS": "1",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-4.5-air",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-4.5-air",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-4.7",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-4.7",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.5-air",
         "ANTHROPIC_AUTH_TOKEN": "3b5f3157d71446c2907fa4a3ab300d54.3i1l7S0Phy8FfPhj",
         "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
@@ -81,7 +88,7 @@
         {
           "command": "npm run build 2>&1 | tail -30",
           "timeoutMs": 60000,
-          "onFailure": "warn"
+          "onFailure": "retry"
         }
       ],
       "pre-task-file": [
@@ -100,6 +107,34 @@
           "shell": false,
           "command": ["npx", "vitest", "run", "{file}"],
           "timeoutMs": 60000,
+          "onFailure": "retry"
+        }
+      ],
+      "pre-iteration": [
+        {
+          "command": "echo \"[pre-iteration] $(date -u +%Y-%m-%dT%H:%M:%SZ) iteration={iteration}\" >> galloper-data/hooks.log",
+          "timeoutMs": 5000,
+          "onFailure": "warn"
+        }
+      ],
+      "post-iteration": [
+        {
+          "command": "echo \"[post-iteration] $(date -u +%Y-%m-%dT%H:%M:%SZ) iteration={iteration}\" >> galloper-data/hooks.log",
+          "timeoutMs": 5000,
+          "onFailure": "warn"
+        }
+      ],
+      "post-evaluate": [
+        {
+          "command": "echo \"[post-evaluate] $(date -u +%Y-%m-%dT%H:%M:%SZ) iteration={iteration}\" >> galloper-data/hooks.log",
+          "timeoutMs": 5000,
+          "onFailure": "warn"
+        }
+      ],
+      "post-replan": [
+        {
+          "command": "echo \"[post-replan] $(date -u +%Y-%m-%dT%H:%M:%SZ) iteration={iteration}\" >> galloper-data/hooks.log",
+          "timeoutMs": 5000,
           "onFailure": "warn"
         }
       ]
@@ -120,6 +155,36 @@
       "task.completed": [
         {
           "command": "echo \"[event:task.completed] $(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> galloper-data/hooks.log",
+          "timeoutMs": 3000
+        }
+      ],
+      "adaptive.plan.completed": [
+        {
+          "command": "jq -c '{event:\"adaptive.plan.completed\",runId,taskCount}' >> galloper-data/adaptive-events.jsonl",
+          "timeoutMs": 3000
+        }
+      ],
+      "adaptive.iteration.started": [
+        {
+          "command": "jq -c '{event:\"adaptive.iteration.started\",runId,iteration,taskId,remainingCount}' >> galloper-data/adaptive-events.jsonl",
+          "timeoutMs": 3000
+        }
+      ],
+      "adaptive.iteration.completed": [
+        {
+          "command": "jq -c '{event:\"adaptive.iteration.completed\",runId,iteration,taskId,replanContinue,remainingCount}' >> galloper-data/adaptive-events.jsonl",
+          "timeoutMs": 3000
+        }
+      ],
+      "adaptive.evaluation.completed": [
+        {
+          "command": "jq -c '{event:\"adaptive.evaluation.completed\",runId,iteration,taskId,planStillValid,confidence,surprises}' >> galloper-data/adaptive-events.jsonl",
+          "timeoutMs": 3000
+        }
+      ],
+      "adaptive.replan.decision": [
+        {
+          "command": "jq -c '{event:\"adaptive.replan.decision\",runId,iteration,taskId,decision,reason,replansUsed}' >> galloper-data/adaptive-events.jsonl",
           "timeoutMs": 3000
         }
       ]

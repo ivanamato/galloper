@@ -41,6 +41,9 @@ interface CliArgs {
   nonInteractive?: boolean;
   defaultName?: string;
   dryRunHooks?: boolean;
+  confidenceThreshold?: number;
+  maxReplans?: number;
+  diffMaxBytes?: number;
 }
 
 function printUsage(): void {
@@ -51,15 +54,19 @@ Subcommands:
   plan              Generate a plan for a task
   implement         Execute implementation based on a plan
   pipeline          Generate a plan and execute all tasks (plan + implement)
+  adaptive          Run an adaptive plan-execute-evaluate-replan loop
   doctor            Validate the galloper.json configuration
   init              Scaffold a new galloper.json by detecting installed LLM CLIs
 
 Options:
-  --prompt <text>        The prompt text (required for single-prompt/plan if --prompt-file not provided)
-  --prompt-file <path>   Path to a file containing the prompt (for single-prompt/plan)
+  --prompt <text>        The prompt text (required for single-prompt/plan/adaptive if --prompt-file not provided)
+  --prompt-file <path>   Path to a file containing the prompt (for single-prompt/plan/adaptive)
   --plan-file <path>     Path to a plan JSON file (required for implement/--dry-run-hooks)
   --config <path>        Path to galloper.json (optional for doctor, default: ./galloper.json)
   --concurrency <n>      Number of concurrent tasks (default: 1, sequential)
+  --confidence-threshold <n>  Minimum confidence threshold for adaptive mode (default: 0.7)
+  --max-replans <n>      Maximum number of replanning cycles in adaptive mode (default: 5)
+  --diff-max-bytes <n>   Maximum diff size in bytes for adaptive evaluation (default: 10000)
   --dry-run-hooks        Analyze which hooks would match without executing (requires --plan-file)
   --force                (init) Overwrite an existing galloper.json
   --non-interactive      (init) Skip prompts; select all detected CLIs, first as default
@@ -74,6 +81,7 @@ Examples:
   galloper plan --prompt-file ./task.txt -v
   galloper implement --plan-file ./galloper-data/plans/plan.json -vv
   galloper pipeline --prompt "Build and execute a complete plan" -vvv
+  galloper adaptive --prompt "Build and adapt a plan" --max-replans 3
   galloper doctor --config ./galloper.json
   galloper init --non-interactive
 `);
@@ -118,6 +126,24 @@ function parseArgs(argv: string[]): CliArgs {
         parsed.concurrency = num;
       }
       i += 1;
+    } else if (token === '--confidence-threshold') {
+      const num = parseFloat(argv[i + 1]);
+      if (!isNaN(num)) {
+        parsed.confidenceThreshold = num;
+      }
+      i += 1;
+    } else if (token === '--max-replans') {
+      const num = parseInt(argv[i + 1], 10);
+      if (!isNaN(num) && num >= 0) {
+        parsed.maxReplans = num;
+      }
+      i += 1;
+    } else if (token === '--diff-max-bytes') {
+      const num = parseInt(argv[i + 1], 10);
+      if (!isNaN(num) && num >= 0) {
+        parsed.diffMaxBytes = num;
+      }
+      i += 1;
     } else if (token === '--force') {
       parsed.force = true;
     } else if (token === '--non-interactive') {
@@ -141,6 +167,13 @@ function parseArgs(argv: string[]): CliArgs {
     }
     if (!parsed.planFile) {
       throw new Error('implement subcommand requires --plan-file <path>');
+    }
+  }
+
+  // Validate adaptive subcommand requires --prompt or --prompt-file
+  if (parsed.subcommand === 'adaptive') {
+    if (!parsed.prompt && !parsed.promptFile) {
+      throw new Error('adaptive subcommand requires --prompt or --prompt-file');
     }
   }
 
@@ -312,6 +345,10 @@ async function main(): Promise<void> {
     cwd: CWD,
     verbosity,
     concurrency: args.concurrency,
+    confidenceThreshold: args.confidenceThreshold,
+    maxReplans: args.maxReplans,
+    diffMaxBytes: args.diffMaxBytes,
+    humanFriendly: args.humanFriendly,
     env: {
       ...process.env,
       CODEX_DISABLE_PROJECT_HOOKS: '1',

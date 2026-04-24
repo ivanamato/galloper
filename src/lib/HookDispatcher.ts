@@ -24,7 +24,18 @@ export class AbortHookError extends Error {
 export type LifecyclePhase =
   | 'pre-plan' | 'post-plan'
   | 'pre-task' | 'post-task'
-  | 'pre-task-file' | 'post-task-file';
+  | 'pre-task-file' | 'post-task-file'
+  | 'pre-iteration' | 'post-iteration'
+  | 'pre-evaluate' | 'post-evaluate'
+  | 'pre-replan' | 'post-replan';
+
+export type PreLifecyclePhase =
+  | 'pre-plan' | 'pre-task' | 'pre-task-file'
+  | 'pre-iteration' | 'pre-evaluate' | 'pre-replan';
+
+export type PostLifecyclePhase =
+  | 'post-plan' | 'post-task' | 'post-task-file'
+  | 'post-iteration' | 'post-evaluate' | 'post-replan';
 
 export type FileAction = 'create' | 'edit' | 'delete';
 
@@ -101,6 +112,8 @@ export interface HookContext {
   cwd: string;
   previousFailures?: HookFailure[];
   classification?: 'declared' | 'surprise' | 'churn';
+  /** Adaptive-loop iteration index (0-based). Available to adaptive lifecycle hooks. */
+  iteration?: number;
 }
 
 export interface HooksConfig {
@@ -143,7 +156,7 @@ export class HookDispatcher {
     }
   }
 
-  async runPre(phase: 'pre-plan' | 'pre-task' | 'pre-task-file', ctx: HookContext): Promise<string> {
+  async runPre(phase: PreLifecyclePhase, ctx: HookContext): Promise<string> {
     const hooks = this.lifecycleHooks.get(phase) ?? [];
     const outputs: string[] = [];
 
@@ -214,7 +227,7 @@ ${result.stdout}
     return outputs.join('\n\n');
   }
 
-  async runPost(phase: 'post-plan' | 'post-task' | 'post-task-file', ctx: HookContext): Promise<HookFailure[]> {
+  async runPost(phase: PostLifecyclePhase, ctx: HookContext): Promise<HookFailure[]> {
     const hooks = this.lifecycleHooks.get(phase) ?? [];
 
     // For post-task-file, serialize all matching hooks for a given path.
@@ -226,7 +239,7 @@ ${result.stdout}
   }
 
   private async runPostBody(
-    phase: 'post-plan' | 'post-task' | 'post-task-file',
+    phase: PostLifecyclePhase,
     ctx: HookContext,
     hooks: LifecycleHookConfig[],
   ): Promise<HookFailure[]> {
@@ -465,6 +478,7 @@ ${result.stdout}
       taskId: ctx.task?.id as string | undefined,
       attempt: ctx.attempt,
       root: ctx.cwd,
+      iteration: ctx.iteration,
     };
   }
 

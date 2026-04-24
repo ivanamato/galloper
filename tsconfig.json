@@ -12,7 +12,9 @@
     "sourceMap": true,
     "outDir": "dist",
     "rootDir": "src",
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "allowJs": false,
+    "checkJs": false
   },
   "include": [
     "src/**/*.ts"

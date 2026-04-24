@@ -282,7 +282,10 @@ function validateHooksConfigPure(config: HooksConfig): void {
   const validPhases = new Set<LifecyclePhase>([
     'pre-plan', 'post-plan',
     'pre-task', 'post-task',
-    'pre-task-file', 'post-task-file'
+    'pre-task-file', 'post-task-file',
+    'pre-iteration', 'post-iteration',
+    'pre-evaluate', 'post-evaluate',
+    'pre-replan', 'post-replan',
   ]);
 
   if (config.lifecycle) {
@@ -499,7 +502,7 @@ export class ConfigManager {
     };
   }
 
-  resolveForSubcommand(subcommand: 'single-prompt' | 'plan' | 'implement' | 'pipeline'): string {
+  resolveForSubcommand(subcommand: 'single-prompt' | 'plan' | 'implement' | 'pipeline' | 'adaptive'): string {
     if (!this.config) {
       throw new Error('Config not loaded. Call load() first.');
     }
@@ -521,6 +524,11 @@ export class ConfigManager {
 
     // For pipeline, use defaultPlanner (same as plan) since pipeline starts with planning
     if (subcommand === 'pipeline') {
+      return this.config.defaultPlanner || this.config.default;
+    }
+
+    // For adaptive, use defaultPlanner (starts with planning) or fall back to default
+    if (subcommand === 'adaptive') {
       return this.config.defaultPlanner || this.config.default;
     }
 

@@ -28,6 +28,11 @@ Events are fired at key points during execution. Subscribe to them via `hooks.ev
 | `task.abandoned` | Task is abandoned after max retries exhausted | TaskRunner | sessionId, timestamp, taskId, attempts |
 | `task.aborted` | Task is aborted (blocking dependency failed or post-plan hook aborted) | TaskRunner | sessionId, timestamp, taskId, reason |
 | `hook.failed` | Lifecycle hook execution fails (pre-plan, post-task, etc) | HookDispatcher | sessionId, timestamp, phase, error |
+| `adaptive.plan.completed` | Initial plan parsed in an adaptive run | AdaptiveDriver | runId, taskCount |
+| `adaptive.iteration.started` | Adaptive loop iteration begins | AdaptiveDriver | runId, iteration, taskId, completedCount, remainingCount |
+| `adaptive.iteration.completed` | Adaptive loop iteration ends | AdaptiveDriver | runId, iteration, taskId, replanContinue, completedCount, remainingCount |
+| `adaptive.evaluation.completed` | Evaluator returned a verdict for the just-executed task | AdaptiveDriver | runId, iteration, taskId, planStillValid, confidence, surprises, notes |
+| `adaptive.replan.decision` | Gate decided whether to replan; carries the verdict and (when applied) before/after plans | AdaptiveDriver | runId, iteration, taskId, decision: 'applied' \| 'skipped' \| 'noop', reason?, replansUsed, before?, after? |
 
 ### Example Event Hook Configuration
 
@@ -66,6 +71,12 @@ Lifecycle hooks are checkpoints during task execution where you can inject custo
 | `post-task` | After a task completes (success or failure) | Once per task | `warn`, `retry` |
 | `pre-task-file` | Before a task creates/edits/deletes a file | Once per file operation | `warn`, `retry`, `abort` |
 | `post-task-file` | After a task completes a file operation | Once per file operation | `warn`, `retry` |
+| `pre-iteration` | Top of an adaptive-loop iteration (after the head task is picked) | Once per iteration (adaptive only) | `warn`, `abort` |
+| `post-iteration` | Bottom of an adaptive-loop iteration | Once per iteration (adaptive only) | `warn`, `abort` |
+| `pre-evaluate` | Before the adaptive evaluator subprocess is spawned | Once per iteration (adaptive only) | `warn`, `abort` |
+| `post-evaluate` | After the evaluation has been parsed and stored | Once per iteration (adaptive only) | `warn`, `abort` |
+| `pre-replan` | Before the adaptive replanner is spawned (only when the gate decides to run) | Conditional: skipped/below-threshold/budget-exhausted iterations don't fire it | `warn`, `abort` |
+| `post-replan` | After the replanner output is parsed (or detected as no-op) | Same gating as `pre-replan` | `warn`, `abort` |
 
 ### Hook Configuration
 
@@ -99,6 +110,7 @@ Each hook in `hooks.lifecycle` can specify:
 | `{taskId}` | Task id (empty for plan-level phases) |
 | `{attempt}` | Retry-loop attempt number (empty when not applicable) |
 | `{root}` | The hook's `cwd`, posix-normalized |
+| `{iteration}` | Adaptive-loop iteration index (0-based); empty for non-adaptive phases |
 
 The legacy `DEVFLOW_*` environment variables (`DEVFLOW_SESSION_ID`, `DEVFLOW_CWD`, `DEVFLOW_FILE_PATH`, `DEVFLOW_FILE_ACTION`) remain set in both modes for back-compat.
 
@@ -263,6 +275,31 @@ Retry kicks in only when `onFailure` resolves to `"retry"` (the default). A hook
 
 ### Pipeline Execution (Plan + Implement)
 - `run.started` → `plan.started` → (plan generation) → `plan.completed` → `pre-plan` (hook) → `post-plan` (hook) → `task.started` → `pre-task` (hook) → (task execution) → `post-task` (hook) → `task.completed` → ... (next task) ... → `run.completed`
+
+### Adaptive Execution
+The adaptive subcommand spawns inner `plan` / `implement` / `single-prompt` subprocesses (each firing their own hooks as documented above) AND fires its own outer-layer phases and events around the loop:
+
+```
+run.started (outer)
+   │
+   ├── (spawn) galloper plan      → fires inner pre-plan / post-plan / run.* events
+   ├── adaptive.plan.completed (event)
+   │
+   ├── for each iteration:
+   │     ├── pre-iteration (hook) + adaptive.iteration.started (event)
+   │     ├── (spawn) galloper implement → fires inner task-loop hooks
+   │     ├── pre-evaluate (hook)
+   │     ├── (spawn) galloper single-prompt → evaluator
+   │     ├── adaptive.evaluation.completed (event) + post-evaluate (hook)
+   │     ├── if gate decides to replan:
+   │     │      pre-replan (hook) → (spawn) replanner → post-replan (hook)
+   │     ├── adaptive.replan.decision (event: applied | skipped | noop)
+   │     └── post-iteration (hook) + adaptive.iteration.completed (event)
+   │
+   └── run.completed (outer; now also dispatched to event hooks)
+```
+
+See `COMMAND_ADAPTIVE.md` §10 for the per-phase context and event payload reference.
 
 ## Error Handling
 

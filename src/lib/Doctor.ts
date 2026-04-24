@@ -5,7 +5,7 @@ import picomatch from 'picomatch';
 import { LlmConfig } from './ConfigManager.js';
 import { nearest } from './Suggest.js';
 
-export const KNOWN_SUBCOMMANDS = ['single-prompt', 'plan', 'implement', 'pipeline'] as const;
+export const KNOWN_SUBCOMMANDS = ['single-prompt', 'plan', 'implement', 'pipeline', 'adaptive'] as const;
 
 export const KNOWN_EVENTS = [
   'run.started',
@@ -32,6 +32,11 @@ export const KNOWN_EVENTS = [
   'workspace.watcher.dropped',
   'hook.failed',
   'hook.decision',
+  'adaptive.plan.completed',
+  'adaptive.iteration.started',
+  'adaptive.iteration.completed',
+  'adaptive.evaluation.completed',
+  'adaptive.replan.decision',
 ] as const;
 
 function extractFirstToken(command: string): string {

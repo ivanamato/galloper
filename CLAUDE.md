@@ -118,6 +118,9 @@ npm run run -- implement --plan-file ./galloper-data/plans/plan.json
 # pipeline: generate and execute a plan in one step (uses defaultPlanner and defaultExecutioner)
 npm run run -- pipeline --prompt "Build and execute a complete plan"
 
+# adaptive: plan, execute each task, evaluate diff, replan when signaled
+npm run run -- adaptive --prompt "Adaptive task" --confidence-threshold 0.7 --max-replans 5
+
 # doctor: validate the galloper.json configuration
 npm run run -- doctor --config ./galloper.json
 
@@ -205,6 +208,30 @@ npm run run -- init --non-interactive --default codex
 # }
 ```
 
+### Adaptive Subcommand
+
+The `adaptive` subcommand runs a plan as an adaptive loop with continuous evaluation.
+
+**Purpose**: Run a plan as an adaptive loop. For each task: execute, evaluate the resulting git diff, and replan the REMAINING tasks when the evaluator flags the plan as no longer valid.
+
+**Requirements**: Git working tree (v1 is git-only).
+
+**Subprocess model**: Self-spawns `galloper plan` (once), `galloper implement` (per task), and `galloper single-prompt` (for evaluate and replan). Existing config commands apply.
+
+**Flags**:
+- `--confidence-threshold <n>` (float, 0..1) — Evaluator confidence below this triggers a replan; default 0.7.
+- `--max-replans <n>` (non-negative int) — Hard cap; default 5.
+- `--diff-max-bytes <n>` (positive int) — Patch is truncated beyond this; file list is always preserved. Default 32768.
+
+**State file**: Each run writes `galloper-data/adaptive/<runId>.json` with the full execution trace: plan, evaluations[], replans[], completedTasks[], remainingTasks[], replansUsed, lastReplanWasNoOp.
+
+**Gate logic**: A replan is skipped with a recorded reason when any of:
+- `replansUsed >= maxReplans` → `budget-exhausted`
+- Previous replan produced a no-op diff → `convergence`
+- Evaluator says plan valid + confidence ≥ threshold + no surprises → `below-threshold`
+
+**Replan authority**: Can insert remediation tasks AT THE HEAD of remaining, or reorder/drop remaining. Completed tasks are LOCKED and never modified.
+
 ### Command Resolution
 
 Each subcommand resolves to an LLM command from `galloper.json`:
@@ -212,6 +239,8 @@ Each subcommand resolves to an LLM command from `galloper.json`:
 1. **`single-prompt`** → uses `config.default`
 2. **`plan`** → uses `config.defaultPlanner` (falls back to `config.default`)
 3. **`implement`** → uses `config.defaultExecutioner` (falls back to `config.default`)
+
+The `adaptive` subcommand uses `defaultPlanner` for the initial plan, `defaultExecutioner` for each task, and the evaluator/replanner roles resolve via `adaptive.defaultEvaluator` / `adaptive.defaultReplanner` → `defaultPlanner` → `default`.
 
 The resolved command must allow the requested subcommand via `allowedSubcommands` and `disallowedSubcommands`.
 
@@ -286,6 +315,13 @@ The `--human-friendly` flag is **independent** from `-v/-vv/-vvv` debug flags an
   "default": "claude-haiku",
   "defaultPlanner": "claude-haiku",
   "defaultExecutioner": "claude-haiku",
+  "adaptive": {
+    "confidenceThreshold": 0.7,
+    "maxReplans": 5,
+    "diffMaxBytes": 32768,
+    "defaultEvaluator": "claude-haiku",
+    "defaultReplanner": "claude-haiku"
+  },
   "commands": {
     "codex": {
       "command": "codex exec --json --skip-git-repo-check -",
@@ -322,13 +358,13 @@ Validation happens at config load time. If `defaultPlanner`/`defaultExecutioner`
 
 ### Hooks and Events
 
-The application emits 20 different event types and supports 6 lifecycle hook phases. These can be configured in the `hooks` section of `galloper.json` to run custom commands at key points during execution.
+The application emits 25 different event types and supports 12 lifecycle hook phases. These can be configured in the `hooks` section of `galloper.json` to run custom commands at key points during execution.
 
 **See `docs/EVENTS_AND_HOOKS.md` for a complete reference** of all events and lifecycle phases, their payloads, firing order, and example configurations.
 
 Quick summary:
-- **Lifecycle hooks** (`hooks.lifecycle`): `pre-plan`, `post-plan`, `pre-task`, `post-task`, `pre-task-file`, `post-task-file`
-- **Events** (`hooks.events`): `run.started`, `run.completed`, `run.failed`, `task.completed`, `plan.started`, etc. (20 total)
+- **Lifecycle hooks** (`hooks.lifecycle`): `pre-plan`, `post-plan`, `pre-task`, `post-task`, `pre-task-file`, `post-task-file`, plus the 6 adaptive-only phases `pre-iteration`, `post-iteration`, `pre-evaluate`, `post-evaluate`, `pre-replan`, `post-replan`
+- **Events** (`hooks.events`): `run.started`, `run.completed`, `run.failed`, `task.completed`, `plan.started`, etc. — plus 5 `adaptive.*` events (`adaptive.plan.completed`, `adaptive.iteration.started`, `adaptive.iteration.completed`, `adaptive.evaluation.completed`, `adaptive.replan.decision`). 25 total.
 
 Each hook/event can have one or more handlers (command to run, with optional timeout and failure mode).
 

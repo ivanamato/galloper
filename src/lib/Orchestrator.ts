@@ -12,10 +12,11 @@ import { HookDispatcher } from './HookDispatcher.js';
 import { VerbosityLevel } from './Verbosity.js';
 import { HumanReporter, NullHumanReporter } from './HumanReporter.js';
 import { LlmStreamNarrator } from './LlmStreamNarrator.js';
+import { AdaptiveDriver, type AdaptiveResult } from './AdaptiveDriver.js';
 
-export type SubcommandName = 'single-prompt' | 'plan' | 'implement' | 'pipeline';
+export type SubcommandName = 'single-prompt' | 'plan' | 'implement' | 'pipeline' | 'adaptive';
 
-export const SUBCOMMANDS: readonly SubcommandName[] = ['single-prompt', 'plan', 'implement', 'pipeline'] as const;
+export const SUBCOMMANDS: readonly SubcommandName[] = ['single-prompt', 'plan', 'implement', 'pipeline', 'adaptive'] as const;
 
 export function isSubcommand(v: string): v is SubcommandName {
   return SUBCOMMANDS.includes(v as SubcommandName);
@@ -29,6 +30,10 @@ export interface OrchestratorInput {
   cwd?: string;
   verbosity?: VerbosityLevel;
   concurrency?: number;
+  confidenceThreshold?: number;
+  maxReplans?: number;
+  diffMaxBytes?: number;
+  humanFriendly?: boolean;
 }
 
 export interface OrchestratorResult {
@@ -123,6 +128,10 @@ export class Orchestrator {
 
     if (input.subcommand === 'pipeline') {
       return this.executePipeline(input);
+    }
+
+    if (input.subcommand === 'adaptive') {
+      return this.executeAdaptive(input);
     }
 
     // Handle single-prompt
@@ -531,5 +540,73 @@ export class Orchestrator {
       });
       throw error;
     }
+  }
+
+  private async executeAdaptive(input: OrchestratorInput): Promise<OrchestratorResult> {
+    if (!input.prompt) {
+      throw new Error('adaptive subcommand requires --prompt or --prompt-file');
+    }
+    const cwd = input.cwd ?? process.cwd();
+    const adaptiveDataDir = path.join(this.dataDir, 'adaptive');
+    const sessionId = new Date().toISOString().replace(/[:.]/g, '-');
+    const hooksConfig = this.configManager.getHooks();
+    const hookDispatcher = new HookDispatcher(hooksConfig, this.humanReporter);
+    this.subscribeEventHooks(hookDispatcher, hooksConfig, sessionId, cwd);
+    const driver = new AdaptiveDriver({
+      configManager: this.configManager,
+      logger: this.logger,
+      humanReporter: this.humanReporter,
+      adaptiveDataDir,
+      hookDispatcher,
+      sessionId,
+    });
+    await this.logger.append({
+      sessionId,
+      type: 'run.started',
+      timestamp: new Date().toISOString(),
+      subcommand: 'adaptive',
+      minLevel: 1,
+      message: '[adaptive] Starting adaptive loop',
+    });
+    let result: AdaptiveResult;
+    try {
+      result = await driver.run({
+        prompt: input.prompt,
+        confidenceThreshold: input.confidenceThreshold,
+        maxReplans: input.maxReplans,
+        diffMaxBytes: input.diffMaxBytes,
+        cwd,
+        humanFriendly: input.humanFriendly,
+      });
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      await this.logger.append({
+        sessionId,
+        type: 'run.failed',
+        timestamp: new Date().toISOString(),
+        error: errMsg,
+        minLevel: 1,
+        message: `[adaptive] Failed: ${errMsg}`,
+      });
+      throw error;
+    }
+    await this.logger.append({
+      sessionId,
+      type: 'run.completed',
+      timestamp: new Date().toISOString(),
+      runId: result.runId,
+      stateFilePath: result.stateFilePath,
+      tasksRun: result.tasksRun,
+      replansRun: result.replansRun,
+      replansSkipped: result.replansSkipped,
+      minLevel: 1,
+      message: `[adaptive] Completed: ${result.tasksRun} tasks, ${result.replansRun} replans, ${result.replansSkipped} skipped`,
+    });
+    return {
+      sessionId,
+      sessionFilePath: result.stateFilePath,
+      exitCode: 0,
+      finalOutput: JSON.stringify(result, null, 2),
+    };
   }
 }

@@ -2,16 +2,32 @@
 
 ## Overview
 
-A new `adaptive` subcommand that runs a plan as an **adaptive loop** instead of a straight-through pipeline. For each task it:
+A new `adaptive` subcommand that runs a plan as an **adaptive loop** instead of a straight-through pipeline. The subcommand is a thin **driver** on top of galloper's existing CLI: for each task it self-spawns `galloper plan` / `galloper implement` / `galloper single-prompt` subprocesses. There is no Evaluator, Replanner, AdaptiveRunner, or GitDiffCapture *module* — those collapse into the driver itself plus two prompt templates.
 
-1. **Executes** the task (deconstruct step is inline — the executioner prompt instructs the LLM to think through sub-steps before acting; no separate LLM call, no extra file).
-2. **Captures** the implementation artifact — a `git diff` of what actually changed on disk.
-3. **Evaluates** whether the remaining plan is still right, given what the diff shows.
-4. **Gates** on the evaluation: only re-plans when the evaluator signals the plan needs to change, and only within a budget.
-5. **Re-plans** when gated in — can reorder, drop, or insert remediation tasks at the head of remaining. Completed tasks are locked.
+Per task the driver:
+
+1. **Executes** the current task — spawns `galloper implement` on a synthesized one-task plan. The task's `instructions` already tell the executioner to think through sub-steps before acting (inline deconstruct).
+2. **Captures** the implementation as a `git diff` between pre-task and post-task `git stash create` tree-ishes. Truncated to `diffMaxBytes`, but the full changed-files list is preserved.
+3. **Evaluates** whether the remaining plan is still right — spawns `galloper single-prompt` with the `EVALUATE_PROMPT` template, the captured diff, and the remaining tasks. Parses structured JSON back.
+4. **Gates** on the evaluation: re-plans only when the evaluator signals the plan needs to change, within a budget, and not after a recent no-op.
+5. **Re-plans** when gated in — spawns `galloper single-prompt` with the `REPLAN_PROMPT` template. Can insert remediation tasks at the head of remaining, or reorder/drop remaining. Completed tasks are locked.
 6. Proceeds to the next task.
 
-This complements (does not replace) the existing `pipeline` subcommand, which stays as the straight-through path.
+This complements (does not replace) the existing `pipeline` subcommand.
+
+---
+
+## Why this shape
+
+The earlier design proposed Evaluator, Replanner, GitDiffCapture, AdaptiveRunner modules and extensions to `LogEvent`, `LifecyclePhase`, and `SessionRecord`. A driver subcommand eliminates all of that:
+
+- The "LLM calls" for evaluate and replan become `galloper single-prompt` invocations — no new modules, same infrastructure.
+- Per-task execution becomes `galloper implement` on a one-task plan — same reconciliation, same hooks, same verify loop.
+- Git diff becomes a ~20-line helper inside the driver file, not a shared module.
+- The driver writes its own state file under `galloper-data/adaptive/<runId>.json` — no `SessionRecord` changes.
+- No new lifecycle hook phases, no new `LogEvent` types. Observability comes from the state file plus galloper-core's existing logs for each sub-invocation.
+
+**Net: ~8-9 small tasks instead of ~15.**
 
 ---
 
@@ -19,21 +35,21 @@ This complements (does not replace) the existing `pipeline` subcommand, which st
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Deconstruct scope | Inline reasoning in executioner prompt | Cheaper; no extra LLM call or file |
+| Architecture | Subcommand acting as a driver over `galloper plan` / `galloper implement` / `galloper single-prompt` | Reuses existing CLI contracts verbatim, no new in-tree modules |
+| Subprocess mechanism | Self-spawn via `process.execPath` + `process.argv[1]` | Stable self-location, no PATH assumption |
+| Deconstruct scope | Inline reasoning in the executioner prompt | Cheaper; no extra LLM call |
 | Re-plan authority | Insert-at-head + reorder/drop remaining; **completed tasks locked** | Prevents full-history rewrite thrash |
 | No-op detection | Strict JSON equality on `remainingTasks` | Simpler, safer v1 |
-| Evaluator input | `git diff` of implementation, **not** executioner self-report | Ground truth over self-report |
-| Diff size policy | Hard truncate to `diffMaxBytes`, but preserve **full file list** | Evaluator sees scope even when patches clipped |
-| VCS support | git-only in v1; explicit error on non-git roots | Manifest fallback deferred to v2 |
-| Evaluator scope | "Is the remaining plan still right?" (one evaluator, one job) | Task success is read from executioner exit code separately |
-| Prompt template location | `src/lib/PromptTemplates.ts` as `export const` | Matches existing pattern for `PLAN_PROMPT` / `IMPLEMENT_PROMPT` |
-| Executioner reuse | `AdaptiveRunner` calls `Executioner.implement({ prompt })` per task | Executioner is already task-agnostic; same pattern `TaskRunner` uses |
+| Evaluator input | `git diff` of implementation, **not** executioner self-report | Ground truth |
+| Diff size policy | Hard truncate to `diffMaxBytes`, preserve **full file list** | Evaluator sees scope even when patches clipped |
+| VCS support | git-only in v1; explicit error on non-git cwd | Manifest fallback deferred to v2 |
+| Evaluator scope | "Is the remaining plan still right?" (one evaluator, one job) | Task success read from subprocess exit code |
+| Prompt template location | `src/lib/PromptTemplates.ts` as `export const` | Matches existing `PLAN_PROMPT` / `IMPLEMENT_PROMPT` |
+| State persistence | Per-run file at `galloper-data/adaptive/<runId>.json` | Avoids touching `SessionRecord` |
 
 ---
 
 ## CLI surface
-
-New subcommand, parallel to `pipeline`:
 
 ```bash
 galloper adaptive --prompt "..." \
@@ -42,47 +58,72 @@ galloper adaptive --prompt "..." \
   [--diff-max-bytes 32768]
 ```
 
-All three flags override the corresponding `galloper.json` values for a single run. Flags not passed fall back to config, which falls back to hard-coded defaults.
+Flags override the corresponding `galloper.json` `adaptive` values for a single run. Flags not passed fall back to config, which falls back to hard-coded defaults.
 
 ---
 
-## Data flow per task
+## Driver algorithm (per run)
 
 ```
-plan.json (from Planner — same plan format as `pipeline`)
-  │
-  └─► for each task:
-        1. snapshot preSnap = GitDiffCapture.snapshot()
-        2. execute  = Executioner.implement({ prompt: task.instructions })
-        3. snapshot postSnap = GitDiffCapture.snapshot()
-        4. diff     = GitDiffCapture.diff(preSnap, postSnap, diffMaxBytes)
-                      → { patch: string (truncated), filesChanged: string[],
-                          truncated: bool, fullSizeBytes: number }
-        5. evaluate = Evaluator.evaluate({
-                        goal, task, implementation: diff,
-                        executionExitCode, remainingPlan })
-                      → { planStillValid, surprises[], confidence, notes }
-        6. gate     = shouldReplan(evalResult, state)
-        7. if gate.run:
-             newRemaining = Replanner.replan({
-                              goal, completedTasks, remainingTasks, surprises })
-             if isNoOpDiff(remainingTasks, newRemaining):
-               state.lastReplanWasNoOp = true
-               emit replan.skipped { reason: "convergence" }
-             else:
-               remainingTasks = newRemaining
-               state.replansUsed += 1
-               emit plan.revised { diff: ... }
-           else:
-             emit replan.skipped { reason: gate.reason }
+1. Resolve config: planner/executioner/evaluator/replanner command names
+   and adaptive numeric config (with CLI flag overrides).
+2. Spawn: galloper plan --prompt "<user goal>"   → outer plan (list of tasks)
+3. state = { replansUsed: 0, lastReplanWasNoOp: false,
+              completedTasks: [], remainingTasks: plan.tasks, evaluations: [],
+              replans: [] }
+4. Write initial state to galloper-data/adaptive/<runId>.json
+5. While state.remainingTasks is not empty:
+     task = state.remainingTasks[0]
+     preSnap = gitStashCreate(cwd)
+     Spawn: galloper implement --plan-file <one-task-plan>
+       (synthesize a one-task plan JSON in a temp file from `task`)
+     exitCode = child.exitCode
+     postSnap = gitStashCreate(cwd)
+     diff = gitDiff(preSnap, postSnap, diffMaxBytes)
+            → { patch, filesChanged, truncated, fullSizeBytes }
+     evalPrompt = renderEvaluatePrompt({
+                    goal, task, implementation: diff,
+                    executionExitCode: exitCode,
+                    remainingPlan: state.remainingTasks })
+     Spawn: galloper single-prompt --prompt "<evalPrompt>"
+            → parse JSON: { planStillValid, surprises, confidence, notes }
+     state.evaluations.push(evaluation)
+     decision = shouldReplan(evaluation, state, cfg)
+     if decision.run:
+       replanPrompt = renderReplanPrompt({
+                        goal,
+                        completedTasks: state.completedTasks,
+                        remainingTasks: state.remainingTasks,
+                        surprises: evaluation.surprises })
+       Spawn: galloper single-prompt --prompt "<replanPrompt>"
+              → parse JSON: { remainingTasks: Task[] }
+       if isNoOpDiff(state.remainingTasks, newRemaining):
+         state.lastReplanWasNoOp = true
+         state.replans.push({ taskId: task.id, ran: false,
+                              skipReason: "convergence" })
+       else:
+         state.remainingTasks = newRemaining
+         state.replansUsed += 1
+         state.lastReplanWasNoOp = false
+         state.replans.push({ taskId: task.id, ran: true,
+                              before, after })
+     else:
+       state.replans.push({ taskId: task.id, ran: false,
+                            skipReason: decision.reason })
+     state.completedTasks.push(task)
+     state.remainingTasks = state.remainingTasks.slice(1)  // or [0] was replaced by replan; re-read
+     write state file
+6. Write final state. Emit stdout JSON summary.
 ```
 
 ### Gate function (pure, unit-testable)
 
 ```ts
-function shouldReplan(ev: EvaluationResult, state: AdaptiveState, cfg: AdaptiveConfig)
-  : { run: true } | { run: false; reason: "budget-exhausted" | "convergence" | "below-threshold" }
-{
+function shouldReplan(
+  ev: EvaluationResult,
+  state: AdaptiveState,
+  cfg: AdaptiveResolvedConfig
+): { run: true } | { run: false; reason: "budget-exhausted" | "convergence" | "below-threshold" } {
   if (state.replansUsed >= cfg.maxReplans)      return { run: false, reason: "budget-exhausted" };
   if (state.lastReplanWasNoOp)                  return { run: false, reason: "convergence" };
   if (ev.planStillValid
@@ -100,9 +141,24 @@ function isNoOpDiff(prev: Task[], next: Task[]): boolean {
 }
 ```
 
+### Diff truncation
+
+```ts
+function truncateDiff(fullPatch: string, filesChanged: string[], maxBytes: number):
+  { patch: string; filesChanged: string[]; truncated: boolean; fullSizeBytes: number }
+{
+  const fullSizeBytes = Buffer.byteLength(fullPatch, "utf8");
+  if (fullSizeBytes <= maxBytes) {
+    return { patch: fullPatch, filesChanged, truncated: false, fullSizeBytes };
+  }
+  const clipped = fullPatch.slice(0, maxBytes);
+  return { patch: clipped, filesChanged, truncated: true, fullSizeBytes };
+}
+```
+
 ---
 
-## New config section (`galloper.json`)
+## Config (extends the shape already added in slice 1)
 
 ```json
 {
@@ -116,12 +172,7 @@ function isNoOpDiff(prev: Task[], next: Task[]): boolean {
 }
 ```
 
-**All fields optional.** Hard-coded defaults apply when absent:
-- `confidenceThreshold`: `0.7`
-- `maxReplans`: `5`
-- `diffMaxBytes`: `32768`
-- `defaultEvaluator`: falls back to `defaultPlanner`, then `default`
-- `defaultReplanner`: falls back to `defaultPlanner`, then `default`
+All fields optional. Defaults if absent: `0.7`, `5`, `32768`; evaluator/replanner fall back to `defaultPlanner` → `default` via existing `ConfigManager` accessors.
 
 ---
 
@@ -129,59 +180,76 @@ function isNoOpDiff(prev: Task[], next: Task[]): boolean {
 
 | File | Responsibility |
 |---|---|
-| `src/lib/Evaluator.ts` | `evaluate(input: EvaluatorInput): Promise<EvaluationResult>` — runs evaluator LLM call, parses structured JSON response |
-| `src/lib/Replanner.ts` | `replan(input: ReplannerInput): Promise<Task[]>` — runs replanner LLM call, returns new remaining tasks |
-| `src/lib/GitDiffCapture.ts` | `snapshot(cwd): Promise<string>` (returns tree-ish via `git add -A && git stash create`) and `diff(preSnap, postSnap, maxBytes): Promise<ImplementationDiff>` with truncation |
-| `src/lib/AdaptiveRunner.ts` | Loop orchestration: per-task snapshot/execute/evaluate/gate/replan cycle. Owns `AdaptiveState` (replansUsed, lastReplanWasNoOp, evaluations[], replans[]) |
+| `src/lib/AdaptiveDriver.ts` | The loop. Pure helper functions (`shouldReplan`, `isNoOpDiff`, `truncateDiff`) plus the `AdaptiveDriver` class. Spawns galloper subprocesses via an injectable `spawner` dep (enabling unit tests with mocks). Writes `galloper-data/adaptive/<runId>.json`. |
 
-### New interfaces
+That's it. No Evaluator, Replanner, GitDiffCapture, or AdaptiveRunner as separate modules.
+
+### New interfaces (all in `AdaptiveDriver.ts`)
 
 ```ts
-// Evaluator.ts
-interface EvaluatorInput {
-  goal: string;
-  task: Task;
-  implementation: ImplementationDiff;
-  executionExitCode: number | null;
-  remainingPlan: Task[];
+export interface AdaptiveInput {
+  prompt: string;
+  confidenceThreshold?: number;
+  maxReplans?: number;
+  diffMaxBytes?: number;
+  cwd?: string;
 }
-interface EvaluationResult {
+
+export interface EvaluationResult {
   planStillValid: boolean;
   surprises: string[];
-  confidence: number;   // 0..1
+  confidence: number;
   notes: string;
 }
 
-// Replanner.ts
-interface ReplannerInput {
-  goal: string;
-  completedTasks: Task[];
-  remainingTasks: Task[];
-  surprises: string[];
-}
-
-// GitDiffCapture.ts
-interface ImplementationDiff {
-  patch: string;           // possibly truncated
-  filesChanged: string[];  // always full list
+export interface ImplementationDiff {
+  patch: string;
+  filesChanged: string[];
   truncated: boolean;
   fullSizeBytes: number;
 }
 
-// AdaptiveRunner.ts
-interface AdaptiveState {
-  replansUsed: number;
-  lastReplanWasNoOp: boolean;
-  evaluations: EvaluationResult[];
-  replans: ReplanRecord[];
-}
-interface ReplanRecord {
-  taskIndex: number;
+export interface ReplanRecord {
+  taskId: string;
   ran: boolean;
   skipReason?: "budget-exhausted" | "convergence" | "below-threshold";
-  before?: Task[];
-  after?: Task[];
+  before?: unknown[];   // remaining tasks snapshot
+  after?: unknown[];
 }
+
+export interface AdaptiveState {
+  runId: string;
+  goal: string;
+  completedTasks: unknown[];
+  remainingTasks: unknown[];
+  evaluations: EvaluationResult[];
+  replans: ReplanRecord[];
+  replansUsed: number;
+  lastReplanWasNoOp: boolean;
+}
+
+export interface AdaptiveResolvedConfig {
+  confidenceThreshold: number;
+  maxReplans: number;
+  diffMaxBytes: number;
+}
+
+export interface AdaptiveResult {
+  runId: string;
+  stateFilePath: string;
+  tasksRun: number;
+  replansRun: number;
+  replansSkipped: number;
+  finalPlan: unknown[];
+}
+
+export type Spawner = (args: {
+  subcommand: "plan" | "implement" | "single-prompt";
+  argv: string[];
+  stdinPrompt?: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 ```
 
 ---
@@ -190,115 +258,61 @@ interface ReplanRecord {
 
 | File | Changes |
 |---|---|
-| `src/lib/PromptTemplates.ts` | Add `EVALUATE_PROMPT` and `REPLAN_PROMPT` as `export const` strings |
-| `src/lib/ConfigManager.ts` | Extend `LlmConfig` with optional `adaptive` section; validate shape at load time |
-| `src/lib/CommandResolver.ts` | Add `evaluate` and `replan` roles with fallback `defaultEvaluator → defaultPlanner → default` (same for replanner) |
-| `src/lib/Orchestrator.ts` | Route `adaptive` subcommand to `AdaptiveRunner`; build `OrchestratorResult` with adaptive summary |
+| `src/lib/PromptTemplates.ts` | Add `EVALUATE_PROMPT` and `REPLAN_PROMPT` as `export const` strings with their input/output contracts |
+| `src/lib/Orchestrator.ts` | Extend `SubcommandName` with `'adaptive'`; add `OrchestratorInput` fields (`confidenceThreshold`, `maxReplans`, `diffMaxBytes`); route `adaptive` to `AdaptiveDriver` |
+| `src/lib/Doctor.ts` | Add `'adaptive'` to `KNOWN_SUBCOMMANDS` so it's valid in `allowedSubcommands` / `disallowedSubcommands` |
 | `src/run-llm-session.ts` | Parse `adaptive` positional + `--confidence-threshold` / `--max-replans` / `--diff-max-bytes` flags |
-| `src/lib/Logger.ts` | Extend `LogEvent` union with new event types (see Events below) |
-| `src/lib/SessionManager.ts` | Extend `SessionRecord` with `evaluations[]`, `replans[]`, `finalPlan` |
-| `src/lib/Doctor.ts` (or wherever doctor lives) | Validate `adaptive.confidenceThreshold ∈ [0,1]`, `maxReplans ≥ 0`, `diffMaxBytes > 0`, evaluator/replanner refs resolve to existing commands |
+
+No `Logger.LogEvent` changes, no `HookDispatcher.LifecyclePhase` changes, no `SessionManager.SessionRecord` changes in v1.
 
 ---
 
-## Events and hooks
+## Build slices (remaining)
 
-### New lifecycle hook phases
+### Slice 1 ✅ SHIPPED
+Types + config + doctor reference checks (commit `72dfd77`).
 
-Added to the known-phase enum and fired from `AdaptiveRunner`:
-- `pre-evaluate` — before each evaluator LLM call
-- `post-evaluate` — after each evaluator LLM call (payload includes `EvaluationResult`)
-- `pre-replan` — before each replanner LLM call
-- `post-replan` — after each replanner LLM call (payload includes before/after remaining tasks)
+### Slice 2 — Prompt templates
+Add `EVALUATE_PROMPT` and `REPLAN_PROMPT` to `PromptTemplates.ts`. Each template clearly states its JSON output contract so downstream parsing is predictable.
+- **Done when:** templates compile; `npm run build` passes; their contract shapes match the interfaces in `AdaptiveDriver` (slice 3).
 
-### New events (emitted via Logger)
+### Slice 3 — AdaptiveDriver
+**3a — Pure helpers + types.** `shouldReplan`, `isNoOpDiff`, `truncateDiff` as exported pure functions; all interfaces from the list above. No class yet. Unit tests exhaustively cover the gate (all reason paths), no-op equality, and truncation boundary/over-limit/exact-limit cases.
+- **Done when:** `npx vitest run tests/unit/AdaptiveDriver.helpers.test.ts` passes.
 
-| Event | Payload |
-|---|---|
-| `task.evaluated` | `{ taskIndex, task, evaluation: EvaluationResult }` |
-| `plan.revised` | `{ taskIndex, before: Task[], after: Task[], diff: { added, removed, reordered } }` |
-| `replan.skipped` | `{ taskIndex, reason: "budget-exhausted" \| "convergence" \| "below-threshold" }` |
-| `adaptive.completed` | `{ tasksRun, replansRun, replansSkipped, finalPlan }` |
+**3b — Driver class + mock-spawner tests.** `AdaptiveDriver` class wiring the loop. Accepts a `Spawner` dependency (default impl shells out via `child_process.spawn` using `process.execPath` + `process.argv[1]`). Writes the state file. Returns `AdaptiveResult`.
+- **Done when:** `npx vitest run tests/unit/AdaptiveDriver.test.ts` passes with mocked spawner covering: happy path, forced replan, budget exhaustion, convergence short-circuit.
 
----
+### Slice 4 — CLI + Orchestrator wiring
+**4a — CLI parsing.** Add `'adaptive'` to `SubcommandName`, `SUBCOMMANDS`, `KNOWN_SUBCOMMANDS`. Parse the three new flags in `run-llm-session.ts`. Route the subcommand through `OrchestratorInput`.
+- **Done when:** `npm run build` passes + CLI arg parsing unit test.
 
-## Build slices
+**4b — Orchestrator routing.** `Orchestrator.execute()` routes `adaptive` to an `AdaptiveDriver` instance. Builds `OrchestratorResult` with `runId`, `stateFilePath`, and the summary fields.
+- **Done when:** `npx vitest run tests/unit/Orchestrator.test.ts` passes (existing tests + one new routing test).
 
-Each slice is independently commit-able. No slice leaves the build broken.
-
-### Slice 1 — Types + config + doctor (zero behavior change)
-- Extend `LlmConfig` in `ConfigManager.ts` with optional `adaptive` section
-- Add `evaluate` and `replan` roles to `CommandResolver.ts` with fallback chains
-- Add doctor validation rules: `confidenceThreshold ∈ [0,1]`, `maxReplans ≥ 0`, `diffMaxBytes > 0`, evaluator/replanner name resolution
-- Unit tests for config shape + doctor rules
-- **Done when:** `galloper doctor` accepts a valid adaptive section, rejects invalid one, and nothing else changed
-
-### Slice 2 — Evaluator module (standalone)
-- Add `EVALUATE_PROMPT` to `PromptTemplates.ts`
-- Implement `src/lib/Evaluator.ts` with typed input/output
-- Unit tests with a mocked `CoreRunner` (feed canned JSON responses, assert parsing)
-- **Done when:** Evaluator class runs an evaluator LLM call and returns a typed `EvaluationResult`; no wiring yet
-
-### Slice 3 — Replanner module (standalone)
-- Add `REPLAN_PROMPT` to `PromptTemplates.ts`
-- Implement `src/lib/Replanner.ts` with typed input/output
-- Unit tests with mocked `CoreRunner`
-- **Done when:** Replanner class returns updated `Task[]` for remaining tasks; no wiring yet
-
-### Slice 4 — GitDiffCapture utility
-- Implement `src/lib/GitDiffCapture.ts`:
-  - `snapshot(cwd)` via `git add -A && git stash create` (does not modify working tree)
-  - `diff(preSnap, postSnap, maxBytes)` returning `ImplementationDiff` with truncation
-  - Error with clear message when `cwd` is not a git root
-- Unit tests against a temp git repo fixture
-- **Done when:** Given a repo and two snapshots, returns a correct, truncation-aware diff
-
-### Slice 5 — AdaptiveRunner (pure loop logic first, then wire-up)
-- Implement `shouldReplan()` and `isNoOpDiff()` as pure functions; unit-test exhaustively
-- Implement `AdaptiveRunner.run()` wiring Executioner + GitDiffCapture + Evaluator + Replanner
-- Unit tests with all four collaborators mocked
-- **Done when:** AdaptiveRunner completes a full plan in-process with mocks, producing correct `evaluations[]` / `replans[]` records
-
-### Slice 6 — CLI + Orchestrator wiring
-- Parse `adaptive` subcommand + new flags in `src/run-llm-session.ts`
-- Route `adaptive` from `Orchestrator.execute()` to `AdaptiveRunner`
-- Build `OrchestratorResult` with adaptive fields
-- End-to-end smoke test with a trivial plan
-- **Done when:** `galloper adaptive --prompt "..."` runs end-to-end on a real plan
-
-### Slice 7 — Hooks + events + SessionRecord
-- Add four new lifecycle phases to the known-phase enum
-- Fire `pre-evaluate` / `post-evaluate` / `pre-replan` / `post-replan` hooks from `AdaptiveRunner`
-- Emit the four new events through `Logger`
-- Extend `SessionRecord` with `evaluations[]`, `replans[]`, `finalPlan`; populate from `AdaptiveRunner`
-- Tests for event emission and hook firing order
-- **Done when:** A full adaptive run produces a complete, inspectable session record and trail
-
-### Slice 8 — Docs
-- Update `CLAUDE.md`: new subcommand section, command resolution table (add `evaluate` / `replan` roles), config format section (adaptive block)
-- Update `docs/EVENTS_AND_HOOKS.md`: four new lifecycle phases, four new events, payload shapes
-- Update `README.md` if it lists subcommands
-- **Done when:** Docs describe the feature accurately with example config and CLI invocation
+### Slice 5 — Docs
+Update `CLAUDE.md`: new subcommand section, config format (link to slice 1 adaptive block), command resolution addendum for evaluator/replanner roles, state-file location. No `EVENTS_AND_HOOKS.md` changes (no new events/phases).
+- **Done when:** doc describes the feature with example invocation and sample state JSON.
 
 ---
 
 ## Acceptance criteria (feature-level)
 
-1. `galloper adaptive --prompt "..."` produces the same `OrchestratorResult` envelope as `pipeline`, plus the new adaptive fields in the session record.
-2. When the evaluator returns `planStillValid: true, confidence >= threshold, surprises: []`, no re-plan fires; this is observable via a `replan.skipped` event with `reason: "below-threshold"`.
-3. When the evaluator signals a surprise or low confidence, a re-plan runs, and its diff is reflected in the `remainingTasks` used for subsequent iterations.
-4. A run cannot exceed `maxReplans` re-plans — further attempts emit `replan.skipped` with `reason: "budget-exhausted"`.
-5. When a re-plan produces a no-op diff, subsequent re-plans are short-circuited with `reason: "convergence"` until the next surprise.
-6. Completed tasks are never rewritten by the replanner; new tasks may only be inserted at the head of remaining.
-7. `galloper adaptive` on a non-git workspace root fails fast with a clear error.
-8. `galloper doctor` rejects invalid adaptive config with clear error codes.
+1. `galloper adaptive --prompt "..."` end-to-end: plans, executes each task, evaluates, re-plans when signaled, writes a state file, exits 0.
+2. When the evaluator returns `planStillValid: true`, `confidence >= threshold`, `surprises: []`, no replan fires; state file records `replan.skipped` entry with `reason: "below-threshold"`.
+3. Low confidence or surprises trigger a replan; the modified `remainingTasks` are used for the next iteration.
+4. After `maxReplans`, further gate hits record `reason: "budget-exhausted"` and no replan fires.
+5. A no-op replan diff short-circuits subsequent replans with `reason: "convergence"` until a fresh surprise.
+6. Completed tasks are never rewritten by the replanner; added tasks appear at the head of `remainingTasks`.
+7. `galloper adaptive` in a non-git directory fails fast with a clear error.
 
 ---
 
 ## Out of scope (v1)
 
-- Non-git workspace roots (manifest-based diff fallback) — deferred to v2
-- Semantic (non-strict) no-op diff detection — deferred; revisit if strict equality produces thrash in practice
-- Per-file diff cap as an alternative truncation policy — only hard-byte-cap in v1
-- Parallel task execution — sequential only in v1
-- Rewriting completed tasks — explicitly disallowed, not a deferred feature
+- Non-git workspaces (manifest-based diff fallback) — v2
+- Semantic no-op diff (vs strict JSON equality) — v2 if thrash observed
+- Per-file diff cap as alternative truncation — v1 is bytes-only
+- First-class integration into `SessionRecord` / `LogEvent` / lifecycle phases — driver state file suffices for v1
+- Parallel task execution — sequential only
+- Rewriting completed tasks — explicitly disallowed

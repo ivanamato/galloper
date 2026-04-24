@@ -6,9 +6,11 @@ export interface TemplateContext {
   taskId?: string;
   attempt?: number;
   root: string;
+  /** Adaptive-loop iteration index (0-based), available to adaptive lifecycle hooks. */
+  iteration?: number;
 }
 
-const PLACEHOLDER_RE = /\{(file|path|action|classification|sessionId|taskId|attempt|root)\}/g;
+const PLACEHOLDER_RE = /\{(file|path|action|classification|sessionId|taskId|attempt|root|iteration)\}/g;
 
 function toPosix(p: string): string {
   return p.replace(/\\/g, '/');
@@ -32,6 +34,8 @@ export function substitute(input: string, ctx: TemplateContext): string {
         return ctx.attempt !== undefined ? String(ctx.attempt) : '';
       case 'root':
         return toPosix(ctx.root);
+      case 'iteration':
+        return ctx.iteration !== undefined ? String(ctx.iteration) : '';
       default:
         return '';
     }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Orchestrator } from '../../src/lib/Orchestrator.js';
 import type { ConfigManager } from '../../src/lib/ConfigManager.js';
 import type { CoreRunner } from '../../src/lib/CoreRunner.js';
@@ -6,6 +6,7 @@ import type { SessionManager, SessionRecord } from '../../src/lib/SessionManager
 import type { Logger } from '../../src/lib/Logger.js';
 import type { Planner } from '../../src/lib/Planner.js';
 import type { Executioner } from '../../src/lib/Executioner.js';
+import { AdaptiveDriver } from '../../src/lib/AdaptiveDriver.js';
 
 interface CapturedLog {
   type: string;
@@ -266,5 +267,102 @@ describe('Orchestrator.execute (unit)', () => {
 
     expect((captured as any).env.OUTER).toBe('yes');
     expect((captured as any).env.INJECTED).toBe('yes');
+  });
+});
+
+describe('Orchestrator adaptive', () => {
+  it('adaptive without --prompt throws a clear error', async () => {
+    const harness = makeHarness();
+    await expect(
+      harness.orchestrator.execute({ subcommand: 'adaptive', env: process.env }),
+    ).rejects.toThrow(/adaptive subcommand requires/);
+  });
+
+  it('adaptive routes through AdaptiveDriver and returns OrchestratorResult', async () => {
+    const harness = makeHarness();
+    const mockResult = {
+      runId: 'test-run-123',
+      stateFilePath: '/fake/adaptive/test-run-123.json',
+      tasksRun: 3,
+      replansRun: 1,
+      replansSkipped: 0,
+      finalPlan: [{ id: 'task1' }, { id: 'task2' }, { id: 'task3' }],
+    };
+
+    const runSpy = vi.spyOn(AdaptiveDriver.prototype, 'run').mockResolvedValue(mockResult);
+
+    const result = await harness.orchestrator.execute({
+      subcommand: 'adaptive',
+      prompt: 'build a feature',
+      env: process.env,
+      confidenceThreshold: 0.8,
+      maxReplans: 10,
+    });
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(result.exitCode).toBe(0);
+    expect(result.sessionFilePath).toBe(mockResult.stateFilePath);
+    expect(result.finalOutput).toBeDefined();
+    expect(result.finalOutput).toContain('"runId": "test-run-123"');
+
+    const parsedFinal = JSON.parse(result.finalOutput as string);
+    expect(parsedFinal).toEqual(mockResult);
+
+    runSpy.mockRestore();
+  });
+
+  it('adaptive logs run.started, run.completed events', async () => {
+    const harness = makeHarness();
+    const mockResult = {
+      runId: 'test-run-456',
+      stateFilePath: '/fake/adaptive/test-run-456.json',
+      tasksRun: 1,
+      replansRun: 0,
+      replansSkipped: 0,
+      finalPlan: [{ id: 'task1' }],
+    };
+
+    vi.spyOn(AdaptiveDriver.prototype, 'run').mockResolvedValue(mockResult);
+
+    await harness.orchestrator.execute({
+      subcommand: 'adaptive',
+      prompt: 'test task',
+      env: process.env,
+    });
+
+    const types = harness.logs.map((l) => l.type);
+    expect(types).toContain('run.started');
+    expect(types).toContain('run.completed');
+
+    const started = harness.logs.find((l) => l.type === 'run.started');
+    expect(started?.payload).toMatchObject({ subcommand: 'adaptive' });
+
+    const completed = harness.logs.find((l) => l.type === 'run.completed');
+    expect(completed?.payload).toMatchObject({
+      runId: 'test-run-456',
+      tasksRun: 1,
+    });
+
+    vi.restoreAllMocks();
+  });
+
+  it('adaptive on error logs run.failed and rethrows', async () => {
+    const harness = makeHarness();
+    const error = new Error('adaptive loop failed');
+    vi.spyOn(AdaptiveDriver.prototype, 'run').mockRejectedValue(error);
+
+    await expect(
+      harness.orchestrator.execute({
+        subcommand: 'adaptive',
+        prompt: 'failing task',
+        env: process.env,
+      }),
+    ).rejects.toThrow('adaptive loop failed');
+
+    const failed = harness.logs.find((l) => l.type === 'run.failed');
+    expect(failed).toBeDefined();
+    expect(failed?.payload.error).toBe('adaptive loop failed');
+
+    vi.restoreAllMocks();
   });
 });

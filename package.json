@@ -10,6 +10,8 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:scripts": "tsc -p tsconfig.scripts.json",
+    "build:adaptive-plan": "npm run build:scripts && node dist-scripts/scripts/build-adaptive-full.js",
     "prerun": "npm run build",
     "run": "node dist/run-llm-session.js",
     "test": "vitest run",
@@ -17,7 +19,8 @@
     "test:coverage": "vitest run --coverage",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "test:all": "npm run build && vitest run"
+    "test:all": "npm run build && vitest run",
+    "check:no-source-js": "git ls-files '*.js' '*.jsx' '*.mjs' '*.cjs' ':!:dist/**' ':!:dist-scripts/**' | grep . && exit 1 || exit 0"
   },
   "engines": {
     "node": ">=20.0.0"
